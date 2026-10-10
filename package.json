@@ -1,6 +1,6 @@
 {
   "name": "rig-parts",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "AI-authored 2D character parts from one anime painting and its See-through layer decomposition: measured parts, weighted-mesh rig specs, verified through rig-c before anything is written. A CLI for agents that cannot see the image.",
   "type": "module",
   "bin": {
