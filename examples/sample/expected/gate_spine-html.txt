@@ -1,5 +1,5 @@
   ..    50 assertions: 24 measured (24 passed, 0 failed), 26 skipped, 0 not in profile "spine-html"
-  ..    pages=20 regions=20 bones=58 slots=20 animations=1 version=4.3.13 regionAttachments=14 meshAttachments=6 physicsConstraints=2 physicsTimelineKeys=0 rig=sample_painting profile=spine-html
+  ..    pages=20 regions=20 bones=58 slots=20 animations=2 version=4.3.13 regionAttachments=14 meshAttachments=6 physicsConstraints=2 physicsTimelineKeys=0 rig=sample_painting profile=spine-html
   ..    pack: skeleton.png 477x1162, 20 region(s), 94.1% covered, padding 2, page edges free, shape polygon
   ..    50 assertions: 25 measured (25 passed, 0 failed), 25 skipped, 0 not in profile "spine-html"
-  ..    pages=1 regions=20 bones=58 slots=20 animations=1 version=4.3.13 regionAttachments=14 meshAttachments=6 physicsConstraints=2 physicsTimelineKeys=0 rig=sample_painting profile=spine-html
+  ..    pages=1 regions=20 bones=58 slots=20 animations=2 version=4.3.13 regionAttachments=14 meshAttachments=6 physicsConstraints=2 physicsTimelineKeys=0 rig=sample_painting profile=spine-html

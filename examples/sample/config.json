@@ -765,7 +765,8 @@
       ],
       "squash": 0.12,
       "brow_drop": 1.2
-    }
+    },
+    "animations_from": "animations.json"
   },
   "constraints": [
     {
@@ -774,9 +775,9 @@
       "bone": "chest_jiggle",
       "x": 0.5,
       "y": 1,
-      "inertia": 0.5,
-      "strength": 100,
-      "damping": 0.85,
+      "inertia": 0.25,
+      "strength": 120,
+      "damping": 0.92,
       "mass": 1,
       "mix": 1
     },
@@ -786,10 +787,10 @@
       "bone": "hip_jiggle",
       "x": 0.5,
       "y": 1,
-      "inertia": 0.5,
-      "strength": 100,
-      "damping": 0.85,
-      "mass": 1,
+      "inertia": 0.2,
+      "strength": 160,
+      "damping": 0.88,
+      "mass": 1.5,
       "mix": 1
     }
   ]

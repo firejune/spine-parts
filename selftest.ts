@@ -9890,7 +9890,10 @@ function runChainSuite(): number | null {
       // recomputed from either geometry, is the check's to the digit, and the status is the bar's.
       const variant = key === 'sample' ? 'skirt-x0.1' : key === 'scarf' ? 'bottomwear-lattice' : null;
       if (variant !== null) {
-        const cfg = readJsonAt(join(ex, 'config.json')) as { motion: { tracks: Array<{ chain?: string; amps?: number[] }> }; meshes: Record<string, Record<string, unknown>> };
+        const cfg = readJsonAt(join(ex, 'config.json')) as { motion: { tracks: Array<{ chain?: string; amps?: number[] }>; animations_from?: string }; meshes: Record<string, Record<string, unknown>> };
+        // The variant's config is written to a directory of its own; the file motion.animations_from names (sample's
+        // animations.json, issue #183) stays beside the example's config, so it is named by its absolute path.
+        if (cfg.motion.animations_from !== undefined) cfg.motion.animations_from = join(ex, cfg.motion.animations_from);
         if (key === 'sample') {
           for (const t of cfg.motion.tracks) if (t.chain?.startsWith('skirt_') === true && t.amps !== undefined) t.amps = t.amps.map((a) => a * 0.1);
         } else {
@@ -16259,11 +16262,29 @@ function sceneUnrenamed(v: unknown, id: string, rigName: string, dropPath: boole
 }
 
 /**
+ * Every `animations` table (an object) or list (of names) in a compiled skeleton, in name order. rigc writes a
+ * skeleton's animations in name order, and composing renames an animation beside the idle `hop` to `<id>:hop`,
+ * which sorts after `idle` where `hop` sorted before it (issue #183): the same animations, listed in another order.
+ */
+function animationsByName(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(animationsByName);
+  if (typeof v !== 'object' || v === null) return v;
+  const out: Record<string, unknown> = {};
+  for (const [k, x] of Object.entries(v)) {
+    if (k === 'animations' && Array.isArray(x) && x.every((n) => typeof n === 'string')) out[k] = [...x].sort();
+    else if (k === 'animations' && typeof x === 'object' && x !== null && !Array.isArray(x)) out[k] = Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([n, a]) => [n, animationsByName(a)]));
+    else out[k] = animationsByName(x);
+  }
+  return out;
+}
+
+/**
  * Every way a one-character composition at its own stage differs from that
  * character's build once the names are taken back: rig.json and motion.json
  * as text, every image's bytes, the atlas as text, every packed page's bytes,
  * skeleton.json and skeleton.model.json as values (Spine's `path` aside, see
- * {@link sceneUnrenamed}), and every idle frame's bytes. Empty when identical.
+ * {@link sceneUnrenamed}; and the order of the animations, see
+ * {@link animationsByName}), and every idle frame's bytes. Empty when identical.
  */
 function sceneIdentityDiffs(build: string, composed: string, id: string): string[] {
   const diffs: string[] = [];
@@ -16299,8 +16320,8 @@ function sceneIdentityDiffs(build: string, composed: string, id: string): string
   };
   for (const f of ['skeleton.json', RIGC_MODEL_DOCUMENT]) {
     const model = f === RIGC_MODEL_DOCUMENT;
-    const want = JSON.stringify(model ? ownHash(bb, readJsonAt(join(bb, f))) : readJsonAt(join(bb, f)));
-    const got = JSON.stringify(sceneUnrenamed(model ? ownHash(cb, readJsonAt(join(cb, f))) : readJsonAt(join(cb, f)), id, rigName, true));
+    const want = JSON.stringify(animationsByName(model ? ownHash(bb, readJsonAt(join(bb, f))) : readJsonAt(join(bb, f))));
+    const got = JSON.stringify(animationsByName(sceneUnrenamed(model ? ownHash(cb, readJsonAt(join(cb, f))) : readJsonAt(join(cb, f)), id, rigName, true)));
     if (want !== got) {
       let i = 0;
       while (i < want.length && want[i] === got[i]) i++;
@@ -16606,6 +16627,34 @@ function runSceneSuite(): number {
       has(shared.err, 'SCENE_ROOT_SHARED', 'character "plain" motion.json') && has(shared.err, 'SCENE_ROOT_SHARED', 'character "reach" rig.json constraints[0]') && good.err === null,
       codes(shared.err),
       "one root holds every character, so a key on it, or an ik following it, would move or reach them all; the scene refuses rather than give one character the root",
+    );
+
+    // Issue #183: a build whose motion.json holds an animation beside the idle (motion.animations_from) composes; the
+    // animation rides along under its character's prefix, its tracks prefixed as the idle's are, and nothing else.
+    // The expected composed animation is written out by hand from the planted one: the bone and the easing gain
+    // "plain:", every other value is as planted.
+    const hop = { duration: 0.5, loop: false, tracks: [{ bone: 'body', property: 'translate', keys: [{ t: 0, v: [0, 0] }, { t: 0.25, v: [0, 3], ease: 'shut' }, { t: 0.5, v: [0, 0] }] }] };
+    const hopWant = { duration: 0.5, loop: false, tracks: [{ bone: 'plain:body', property: 'translate', keys: [{ t: 0, v: [0, 0] }, { t: 0.25, v: [0, 3], ease: 'plain:shut' }, { t: 0.5, v: [0, 0] }] }] };
+    writeSceneBuild(join(dir, 'hopper'), 'plain', { motion: (m) => ((m.animations as Record<string, unknown>).hop = JSON.parse(JSON.stringify(hop))) });
+    writeSceneBuild(join(dir, 'hopslot'), 'plain', { motion: (m) => ((m.animations as Record<string, unknown>).hop = { ...hop, tracks: [{ ...hop.tracks[0], slot: 'eye' }] }) });
+    const withHop = compose(two({ characters: [{ id: 'plain', build: 'hopper', offset: [0, 20] }, { id: 'reach', build: 'reach', offset: [50, 10] }] }));
+    const slotted = compose(two({ characters: [{ id: 'plain', build: 'hopslot', offset: [0, 20] }, { id: 'reach', build: 'reach', offset: [50, 10] }] }));
+    const hopMotion = (withHop.ok as ComposedScene | null)?.motion;
+    const plainMotion = (good.ok as ComposedScene | null)?.motion;
+    const hopAnims = (hopMotion?.animations ?? {}) as Record<string, unknown>;
+    const { ['plain:hop']: carried, ...rest } = hopAnims;
+    const sameElse = hopMotion !== undefined && plainMotion !== undefined && rigJsonText({ ...hopMotion, animations: rest }) === rigJsonText(plainMotion) && rigJsonText((withHop.ok as ComposedScene | null)?.rig ?? {}) === rigJsonText((good.ok as ComposedScene | null)?.rig ?? {});
+    say(
+      'SC25_AN_ANIMATION_BESIDE_THE_IDLE_RIDES_ALONG_UNDER_ITS_CHARACTER_S_PREFIX_AND_A_BUILD_WITHOUT_ONE_IS_UNCHANGED',
+      withHop.err === null &&
+        Object.keys(hopAnims).join(',') === 'idle,plain:hop' &&
+        JSON.stringify(carried) === JSON.stringify(hopWant) &&
+        sameElse &&
+        Object.keys(plainMotion?.animations ?? {}).join(',') === 'idle' &&
+        has(slotted.err, 'SCENE_BUILD_FIELD_KNOWN', 'motion.json animations.hop.tracks[0].slot') &&
+        slotted.err?.problems.length === 1,
+      `plain with a "hop" beside its idle: ${withHop.err === null ? 'composes' : codes(withHop.err)}, animations ${Object.keys(hopAnims).join(', ')}, "plain:hop" ${JSON.stringify(carried) === JSON.stringify(hopWant) ? 'is the planted animation with its bone and easing prefixed' : `is ${JSON.stringify(carried)?.slice(0, 160)}`}; the rest of the motion and the rig ${sameElse ? 'byte-identical to' : 'differ from'} the scene whose plain has no hop, which holds ${Object.keys(plainMotion?.animations ?? {}).join(', ')}; a hop track carrying "slot" -> ${codes(slotted.err)}`,
+      "issue #183: build writes the animations motion.animations_from names after the idle, and compose refused any of them; the scene schedules none — each rides along for the consumer, named under its character as the idle's tracks are, and read with the idle's own key lists so no name in it goes unprefixed",
     );
     // A one-character scene at its own stage: canvas 40x40, offset (0, 0), no plate.
     const solo: string[] = [];

@@ -325,6 +325,14 @@ const IDLE_KEYS = ['duration', 'loop', 'note', 'tracks'];
 const TRACK_KEYS = ['bone', 'group', 'property', 'keys'];
 const KEY_KEYS = ['t', 'v', 'curve', 'ease'];
 
+/** One animation of a motion.json: the idle, or one beside it as the file `motion.animations_from` named it (issue #183). */
+type SceneAnimation = { duration: number; loop?: boolean; note?: string; tracks: MotionSpec['animations']['idle']['tracks'] };
+
+/** Every animation a motion.json holds, the idle first, in its own order. */
+function animationsOf(motion: MotionSpec): Record<string, SceneAnimation> {
+  return motion.animations as unknown as Record<string, SceneAnimation>;
+}
+
 function readJson(path: string, what: string, problems: Problem[]): unknown {
   if (!existsSync(path)) {
     problems.push({ code: 'SCENE_BUILD_PRESENT', object: path, detail: `no such file; ${what}` });
@@ -426,7 +434,18 @@ export function readCharacterBuild(c: SceneCharacter, problems: Problem[]): Char
     const m = motionRaw as Record<string, unknown>;
     if (isRecord(m)) {
       const anims = isRecord(m.animations) ? m.animations : {};
-      unknown('motion.json animations', anims, ['idle']);
+      // Every animation beside the idle (motion.animations_from, issue #183) is read with the idle's own key lists,
+      // so each name it carries is one compose prefixes; its loop is the file's, not the rig stage's.
+      for (const [n, a] of Object.entries(anims)) {
+        if (n === 'idle') continue;
+        unknown(`motion.json animations.${n}`, a, IDLE_KEYS);
+        const tracks = isRecord(a) && Array.isArray(a.tracks) ? a.tracks : [];
+        tracks.forEach((t, i) => {
+          unknown(`motion.json animations.${n}.tracks[${i}]`, t, TRACK_KEYS);
+          const keys = isRecord(t) && Array.isArray(t.keys) ? t.keys : [];
+          keys.forEach((k, j) => unknown(`motion.json animations.${n}.tracks[${i}].keys[${j}]`, k, KEY_KEYS));
+        });
+      }
       if (isRecord(anims.idle)) {
         unknown('motion.json animations.idle', anims.idle, IDLE_KEYS);
         if (anims.idle.loop !== true) problems.push({ code: 'SCENE_BUILD_FIELD_KNOWN', object: `${who} motion.json animations.idle.loop`, detail: `is ${show(anims.idle.loop)}; the rig stage writes true` });
@@ -677,11 +696,11 @@ export function composeScene(
   // The root is shared: a character that drives it would move every character.
   for (const b of ready) {
     const where = `character "${b.id}"`;
-    b.motion.animations.idle.tracks.forEach((t, k) => {
+    for (const [an, anim] of Object.entries(animationsOf(b.motion))) anim.tracks.forEach((t, k) => {
       const tr = t as unknown as Record<string, unknown>;
       const members = typeof tr.group === 'string' ? (b.motion.groups[tr.group] ?? []) : [];
       if (tr.bone === ROOT_BONE || members.includes(ROOT_BONE)) {
-        fail('SCENE_ROOT_SHARED', `${where} motion.json animations.idle.tracks[${k}]`, `keys "${ROOT_BONE}"${typeof tr.group === 'string' ? ` through the group "${tr.group}"` : ''} (${String(tr.property)}); the scene's root is shared by every character, so a key on it would move them all — key a bone of the character's own`);
+        fail('SCENE_ROOT_SHARED', `${where} motion.json animations.${an}.tracks[${k}]`, `keys "${ROOT_BONE}"${typeof tr.group === 'string' ? ` through the group "${tr.group}"` : ''} (${String(tr.property)}); the scene's root is shared by every character, so a key on it would move them all — key a bone of the character's own`);
       }
     });
     (b.rig.constraints ?? []).forEach((con, k) => {
@@ -791,22 +810,27 @@ export function composeScene(
   const easings: MotionSpec['easings'] = {};
   const groups: MotionSpec['groups'] = {};
   const tracks: MotionSpec['animations']['idle']['tracks'] = [];
+  // Every animation beside a character's idle rides along under its character's prefix (issue #183), its tracks
+  // prefixed as the idle's are and nothing else changed: the scene plays the idle, and schedules none of these.
+  const beside: Record<string, SceneAnimation> = {};
   const notes = new Set(ready.map((b) => b.motion.animations.idle.note));
   for (const c of scene.characters) {
     const b = byId.get(c.id) as CharacterBuild;
     const id = c.id;
     for (const [k, v] of Object.entries(b.motion.easings)) easings[prefixed(id, k)] = v;
     for (const [k, v] of Object.entries(b.motion.groups)) groups[prefixed(id, k)] = v.map((n) => P(id, n));
-    for (const t of b.motion.animations.idle.tracks) {
+    const prefixTrack = (t: MotionSpec['animations']['idle']['tracks'][number]): MotionSpec['animations']['idle']['tracks'][number] => {
       const tr = { ...t } as Record<string, unknown>;
       if (typeof tr.bone === 'string') tr.bone = P(id, tr.bone);
       if (typeof tr.group === 'string') tr.group = prefixed(id, tr.group);
       tr.keys = (t.keys as unknown as Array<Record<string, unknown>>).map((k) => (typeof k.ease === 'string' ? { ...k, ease: prefixed(id, k.ease) } : k));
-      tracks.push(tr as unknown as MotionSpec['animations']['idle']['tracks'][number]);
-    }
+      return tr as unknown as MotionSpec['animations']['idle']['tracks'][number];
+    };
+    for (const t of b.motion.animations.idle.tracks) tracks.push(prefixTrack(t));
+    for (const [n, a] of Object.entries(animationsOf(b.motion))) if (n !== 'idle') beside[prefixed(id, n)] = { ...a, tracks: a.tracks.map(prefixTrack) };
   }
   const note = notes.size === 1 ? [...notes][0] : ready.map((b) => `${b.id}: ${b.motion.animations.idle.note}`).join(' | ');
-  const motion: MotionSpec = { spec: 'rigc-motion/1', archetype: name, cut: name, easings, groups, animations: { idle: { duration: durations[0], loop: true, note, tracks } } };
+  const motion: MotionSpec = { spec: 'rigc-motion/1', archetype: name, cut: name, easings, groups, animations: { idle: { duration: durations[0], loop: true, note, tracks }, ...beside } };
 
   const report: SceneReport = {
     spec: SCENE_REPORT_SPEC,
@@ -930,7 +954,7 @@ export function unprefixedNames(rig: RigSpec, motion: MotionSpec, ids: readonly 
     name('group', g, false);
     for (const m of members) name(`group ${g} member`, m, false);
   }
-  for (const t of motion.animations.idle.tracks) {
+  for (const t of Object.values(animationsOf(motion)).flatMap((a) => a.tracks)) {
     const tr = t as unknown as Record<string, unknown>;
     if ('bone' in tr) name('track bone', tr.bone, false);
     if ('group' in tr) name('track group', tr.group, false);

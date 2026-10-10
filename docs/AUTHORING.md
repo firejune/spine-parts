@@ -903,7 +903,8 @@ file in rig-c's motion-spec shape beside the config and name it:
 ```
 
 `build` writes `surprised` into `rig/motion.json` after `idle`, gates it with the rig, and
-`check` names it on a line of its own. With exactly this file beside `examples/sample`'s config,
+`check` names it on a line of its own (`examples/sample` carries one, `animations.json` with `hop`, the
+recipe below). With exactly this file beside `examples/sample`'s config in its place,
 `build` printed (this tree, rig-c as `package.json` pins it):
 
 ```
@@ -937,7 +938,7 @@ fragment below, cut to the bust:
   "r": 8, "segments": [ ["chest", [419, 223], [419, 437]], ["hip", [419, 437], [419, 557]] ] } },
 "constraints": [
   { "type": "physics", "name": "bust_phys", "bone": "chest_jiggle",
-    "x": 0.5, "y": 1, "inertia": 0.5, "strength": 100, "damping": 0.85, "mass": 1, "mix": 1 } ]
+    "x": 0.5, "y": 1, "inertia": 0.25, "strength": 120, "damping": 0.92, "mass": 1, "mix": 1 } ]
 ```
 
 - **A bone the config authors**, under the bone the patch rides on. `propose` writes no such
@@ -951,7 +952,7 @@ fragment below, cut to the bust:
 - **A `physics` constraint** on that bone in `constraints`, in rig-c's shape; every field but
   the bone is rigc's to accept.
 
-`build` on `sample` as tracked (PR #187):
+`build` on `sample` as tracked (PR #187; the values above are the ones tuned for its `hop`, issue #183):
 
 ```
 check: PASS; 9 of 9 bar(s) measured, 0 skipped
@@ -972,9 +973,30 @@ moves at most 0.155 rig px (idle frame 3, t 0.25 s); the hips move 0.000 at all 
 because the idle keys `chest` and never `hip`, so a child of `hip` receives no motion. A spring
 of strength 100 trails a parent moving at about 2 px/s by the order of speed over its angular
 frequency, about 0.2 px (PR #187, from the definition): no setting makes a 4 s breath read as a
-jiggle. Faster keys on the parent bone — a hop, a turn, in a named animation (the recipe above)
-or a consumer's own — are what the spring answers; no figure for one is measured in this
-repository, and no bar here judges the jiggle.
+jiggle (with the values tracked now, `bust_phys` inertia 0.25, strength 120, damping 0.92, the
+idle moves the bust at most 0.066 rig px, idle frame 2). Faster keys on the parent bone — a hop,
+a turn, in a named animation (the recipe above) or a consumer's own — are what the spring
+answers. `sample`'s `animations.json` holds one, `hop` (1 s: `hip` `translate` y down 5, up 24,
+landing at -6 at 0.45 s, settling at 0.55 s; nothing keys the jiggle bones): rendered at 30 fps
+against the same build without its constraints, the bust moves at most 6.583 rig px and the hips
+(`hip_phys` inertia 0.2, strength 160, damping 0.88, mass 1.5) at most 4.432 (frame 13, the fall
+into the landing), and both overshoot after it, 3.38 and 1.38 rig px (frames 21 and 22;
+`docs/evidence/sample-hop.png`). No bar here judges the jiggle, and two limits follow from that:
+
+- **The region's `band` caps the displacement.** The patch moves as one piece and the band is
+  where the mesh stretches to follow it, so physics values that carry the patch further than
+  its band absorbs squeeze or stretch the band's triangles past the texture-stretch ceiling.
+  `check` reads the idle alone and does not see it; check's own reading applied to `hop`'s
+  geometry with PR #187's values (inertia 0.5, strength 100, damping 0.85, mass 1, a bone
+  displacement of 9.85 rig px against bands of 16 and 12) gives
+  `CHECK_TEXTURE_STRETCH: mesh "bottomwear" triangle 13 (vertices 5 183 6), edge 6-5, idle frame 13 — the edge is 0.233 times its rest length (max(ratio, 1/ratio) 4.29); <= 1.926544 is required`
+  and `topwear` 2.597; with the values tracked now it reads 1.697 (`topwear`) and 1.566
+  (`bottomwear`). Tune the constraint against the animation that drives it, not the idle.
+- **An added animation can move the idle's figures.** The render's viewport is fitted over
+  every animation, and the idle frames share it, so an animation that travels further than the
+  idle redraws the idle at another size: adding `hop` to `sample` narrowed the idle render from
+  201 to 198 px wide and moved `check.json`'s `BREATH_VISIBLE` `torso_heat_mean` from 7.8 to
+  7.705, every status unchanged, although `check` reads the idle alone.
 
 ## 4. The command order
 
@@ -1975,6 +1997,13 @@ What is composed:
   duration. Constraints are carried in character order with their
   `invariants.detached`; `invariants.idleDrivesMeshes` once, when any character
   declares it.
+- **Every animation beside a character's idle** — what `motion.animations_from`
+  wrote into its `motion.json` (§3) — rides along as `<id>:<name>` after the idle,
+  its tracks' bones, groups and easings prefixed as the idle's are and every other
+  value as written; the scene schedules none of them, they are the consumer's to
+  play. Each is read with the idle's own key lists, so a key compose does not know
+  how to prefix is `SCENE_BUILD_FIELD_KNOWN`, as it is on the idle, and a track of
+  one that keys `root` is `SCENE_ROOT_SHARED` (issue #183).
 - **Gated as `rig` gates its own:** `rigc build --profile spine-html --pack`, the
   compile and the packed pages on disk, in a scratch directory; `--out` receives
   `rig/` (`rig.json`, `motion.json`, `images/`) and `scene.json` only when it is
