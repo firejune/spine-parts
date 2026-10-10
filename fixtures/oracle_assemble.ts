@@ -163,8 +163,9 @@ function main(): void {
         rigScale: as.rig_scale as number,
         plan: as.plan as ReturnType<typeof stageFields>['plan'],
         extend: (as.extend_below_crop ?? []) as ReturnType<typeof stageFields>['extend'],
-        // The reference had no patches, so no config it wrote carries any.
+        // The reference had no patches and no cuts, so no config it wrote carries any.
         patches: [],
+        cuts: [],
       };
     }
     const results = new Map<SeamRule, AssembleResult>();

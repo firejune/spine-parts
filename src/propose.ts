@@ -250,14 +250,37 @@ export function checkProposal(P: PartSet, p: Proposal): void {
   // from, so the loader holds it to its own rule (a region, never a mesh).
   // Its box, alpha and draw are the record's own box and placeholders the
   // loader only type-checks: nothing here is written anywhere.
+  // A part whose `from` an earlier part already has is the piece of an
+  // `assemble.cuts` entry (issue #170) — the only way two parts share a layer
+  // — and goes back as a cut of that earlier part, its polygon the record's
+  // box, a placeholder the loader only type-checks like the patches' fields.
   const run = P.recs.filter((r) => splitFrom(r.from)[0] !== PAINTING_RUN);
   const painted = P.recs.filter((r) => splitFrom(r.from)[0] === PAINTING_RUN);
+  const firstOf = new Map<string, string>();
+  for (const r of run) if (!firstOf.has(r.from)) firstOf.set(r.from, r.name);
+  const planned = run.filter((r) => firstOf.get(r.from) === r.name);
+  const pieces = run.filter((r) => firstOf.get(r.from) !== r.name);
   parseConfig({
     key: 'proposal',
     assemble: {
       rig_scale: 1,
-      plan: run.map((r) => [r.name, ...splitFrom(r.from)]),
+      plan: planned.map((r) => [r.name, ...splitFrom(r.from)]),
       patches: painted.map((r) => ({ name: r.name, box: [r.x, r.y, r.x + r.w, r.y + r.h], alpha: 'box', draw: 'front' })),
+      ...(pieces.length === 0
+        ? {}
+        : {
+            cuts: pieces.map((r) => ({
+              from: firstOf.get(r.from) as string,
+              into: r.name,
+              polygon: [
+                [r.x, r.y],
+                [r.x + r.w, r.y],
+                [r.x + r.w, r.y + r.h],
+              ],
+              draw: 'front',
+              overlap: 0,
+            })),
+          }),
     },
     bones: p.bones,
     meshes: p.meshes,

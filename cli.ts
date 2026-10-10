@@ -326,14 +326,18 @@ usage:
       <out>/render/recomposite_rig.png and <out>/render/${ERROR_MAP_FILE} (the error
       map: uncovered error px red, covered error px blue, the rest the painting in
       light grey). Reads config.seethrough.head_box and
-      .resolution and config.assemble.rig_scale, .plan, .extend_below_crop and
+      .resolution and config.assemble.rig_scale, .plan, .extend_below_crop,
       .patches — extra parts cut from the painting itself over a rig-pixel box
       (alpha "silhouette": the painting's figure inside it; "box": all of it),
       drawn "back", "front" or {"before": <plan part>}, recorded in parts.json
-      as from "painting:<name>" and counted 100 % source — and no rig section:
+      as from "painting:<name>" and counted 100 % source — and .cuts — a plan
+      part's pixels inside a rig-pixel polygon taken into a new part, drawn the
+      same way, recorded with the plan part's from — and no rig section:
       bones, meshes, regions and motion need not exist yet, because propose
       drafts them from these parts (AUTHORING §4, the table).
-      Prints one line per part, the seam override counts, the \`pixels:\` totals
+      Prints one line per part, one \`cut:\` line per part a cut split (its
+      opaque pixels = what it kept + what each cut took), the seam override
+      counts, the \`pixels:\` totals
       (opaque = visible + occluded; taken from the painting; visible but not
       projected), and \`recomposite vs source\` (mean |d| and % within 8 over the
       mean channel; error px: max channel > 40; uncovered: of those, where no
