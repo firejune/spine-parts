@@ -54,8 +54,22 @@
  * (`x-…`) and an annotation (`note`, `…_note`) ride on a constraint as on any
  * object the loader vouches for, and the rig stage leaves them out of what it
  * hands rigc ({@link constraintForRig}).
+ *
+ * 🔗 **`motion.animations_from` is rig-c's too, verbatim (issue #183).** An
+ * optional path, relative to the config file's directory, to a file in
+ * rig-c's motion-spec shape whose `animations` are written into `motion.json`
+ * beside the idle on every `rig` and `build`, untouched. The loader owns what
+ * the merge needs and nothing else ({@link readAnimationsFrom}): the file
+ * exists and parses; it is an object holding `spec` ("rigc-motion/1") and an
+ * `animations` table of objects, nothing else that would be dropped; no
+ * animation is named `idle`; and no key in it is written twice. What an
+ * animation holds is rigc's to accept or refuse, at the rig stage's gate. The
+ * file is read where the config is read from a path ({@link loadConfig});
+ * {@link parseConfig}, which has no path to resolve against, checks only that
+ * the field is a non-empty string.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { RIG_SKIN_CONSTRAINT_KEYS, type RigConstraint, type RigSkinConstraintKey } from 'rig-c/src/rig.ts';
 import { GRID, MAX_SIDE } from './contour.ts';
 import { type Problem, refuseIfAny } from './errors.ts';
@@ -473,6 +487,28 @@ export interface Motion {
   duration: number;
   tracks: Track[];
   blink?: Blink;
+  /**
+   * A file in rig-c's motion-spec shape whose `animations` are written beside
+   * the idle (issue #183), its path relative to the config file's directory.
+   * Absent, `motion.json` holds the idle alone.
+   */
+  animations_from?: string;
+}
+
+/** The motion-spec version a file `motion.animations_from` names must state: rig-c's, the one `motion.json` states. */
+export const ANIMATIONS_FROM_SPEC = 'rigc-motion/1';
+
+/**
+ * The animations `motion.animations_from` names, as read: `table` is the file's
+ * `animations` object itself, each animation untouched, in the order
+ * `JSON.parse` gives its keys (the file's order, except that a name that is an
+ * array index, `"0"` to `"4294967294"`, comes first, in numeric order — the
+ * JavaScript object's own key order, which no writer here can change).
+ */
+export interface AnimationsFrom {
+  /** The file, resolved against the config's directory. */
+  file: string;
+  table: Record<string, unknown>;
 }
 
 /**
@@ -687,7 +723,16 @@ function readConfigFile(path: string): Json {
 }
 
 export function loadConfig(path: string): CharacterConfig {
-  return parseConfig(readConfigFile(path));
+  return loadConfigAndAnimations(path).config;
+}
+
+/**
+ * The full loader with the file `motion.animations_from` names read beside it,
+ * relative to the config's directory: every problem in either is one refusal.
+ * `animations` is null when the config names no file.
+ */
+export function loadConfigAndAnimations(path: string): { config: CharacterConfig; animations: AnimationsFrom | null } {
+  return parseConfigFrom(readConfigFile(path), dirname(resolve(path)));
 }
 
 // ---------------------------------------------------------------------------
@@ -830,8 +875,16 @@ export function loadEarlyConfig(path: string, door: EarlyDoor): PaintConfig | Ea
   return parseEarlyConfig(raw, 'assemble');
 }
 
-/** Validate a parsed config. Every problem found is thrown at once, as one `PartsError`. */
+/**
+ * Validate a parsed config. Every problem found is thrown at once, as one
+ * `PartsError`. With no path to resolve against, `motion.animations_from` is
+ * checked as a non-empty string and its file is not read ({@link loadConfig} reads it).
+ */
 export function parseConfig(raw: Json): CharacterConfig {
+  return parseConfigFrom(raw, null).config;
+}
+
+function parseConfigFrom(raw: Json, base: string | null): { config: CharacterConfig; animations: AnimationsFrom | null } {
   const c = new Check();
   const required = topRequired('full');
   const top = c.object('config', raw, required, TOP_KEYS.filter((k) => !required.includes(k)));
@@ -847,8 +900,151 @@ export function parseConfig(raw: Json): CharacterConfig {
   if ('meshes' in t && 'regions' in t && 'assemble' in t) checkCoverage(c, parts, patches, t.meshes, t.regions);
   if ('motion' in t) checkMotion(c, t.motion, names.bones, names.chains, 'regions' in t ? t.regions : undefined);
   if ('constraints' in t) checkConstraints(c, t.constraints, names.bones, names.parents);
+  const from = isPlainObject(t.motion) ? t.motion.animations_from : undefined;
+  const animations = base !== null && typeof from === 'string' && from !== '' ? readAnimationsFrom(c, resolve(base, from)) : null;
   refuseIfAny(c.problems);
-  return raw as CharacterConfig;
+  return { config: raw as CharacterConfig, animations };
+}
+
+function isPlainObject(v: Json): v is Record<string, Json> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Read the file `motion.animations_from` names (issue #183) and vouch for what
+ * merging its animations beside the idle needs, every problem collected in `c`:
+ *
+ * - `CONFIG_FILE_PRESENT`: no such file, or a file that cannot be read.
+ * - `CONFIG_IS_JSON`: the text does not parse.
+ * - `CONFIG_FIELD_TYPE`: the file is not an object, its `spec` is not
+ *   "rigc-motion/1", its `animations` is not an object, or an animation in it
+ *   is not one. `CONFIG_KEY_KNOWN` / `CONFIG_FIELD_PRESENT`: a key besides
+ *   `spec` and `animations` (and the annotation and record doors), or one of
+ *   the two absent. rig-c's `easings`, `groups`, `setup`, `physics` and `mix`
+ *   are refused rather than dropped: `motion.json`'s own are this package's,
+ *   and a table read and not written would be a value lost without a word.
+ * - `CONFIG_ANIMATION_NAME_FREE`: an animation named `idle`, the one the
+ *   config's own `motion` writes.
+ * - `CONFIG_KEY_UNIQUE`: a key written twice in one object of the file.
+ *   `JSON.parse` keeps the last and drops the others silently, so the file's
+ *   text is read for it ({@link repeatedKeys}).
+ *
+ * Returns the animations when this file added no problem, else null.
+ */
+function readAnimationsFrom(c: Check, file: string): AnimationsFrom | null {
+  const field = 'config.motion.animations_from';
+  const shape = `a file in rig-c's motion-spec shape, {"spec": "${ANIMATIONS_FROM_SPEC}", "animations": {"<name>": {"duration": …, "tracks": [...]}}}, its path relative to the config's directory`;
+  if (!existsSync(file) || !statSync(file).isFile()) {
+    c.fail('CONFIG_FILE_PRESENT', field, `names ${file}, which is no such file; ${shape} is required`);
+    return null;
+  }
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (err) {
+    c.fail('CONFIG_FILE_PRESENT', field, `names ${file}, which cannot be read: ${(err as Error).message}; ${shape} is required`);
+    return null;
+  }
+  let raw: Json;
+  try {
+    raw = JSON.parse(text);
+  } catch (err) {
+    c.fail('CONFIG_IS_JSON', `${field} (${file})`, `does not parse as JSON: ${(err as Error).message}`);
+    return null;
+  }
+  const before = c.problems.length;
+  const at = `${field} (${file})`;
+  if (!isPlainObject(raw)) {
+    c.fail('CONFIG_FIELD_TYPE', at, `is ${show(raw)}; ${shape} is required`);
+    return null;
+  }
+  for (const r of repeatedKeys(text)) {
+    c.fail(
+      'CONFIG_KEY_UNIQUE',
+      `${at}${r.at === '' ? '' : `.${r.at}`}`,
+      `names "${r.key}" ${r.count === 2 ? 'twice' : `${r.count} times`}; each key once is required — JSON keeps only the last, so ${r.at === 'animations' ? 'every animation of that name but the last' : 'every value but the last'} would be dropped without a word`,
+    );
+  }
+  const o = c.object(at, raw, ['spec', 'animations'], []);
+  if (o !== null && 'spec' in o && o.spec !== ANIMATIONS_FROM_SPEC) {
+    c.fail('CONFIG_FIELD_TYPE', `${at}.spec`, `is ${show(o.spec)}; "${ANIMATIONS_FROM_SPEC}" is required, the motion-spec version motion.json states`);
+  }
+  if (o !== null && 'animations' in o) {
+    if (!isPlainObject(o.animations)) {
+      c.fail('CONFIG_FIELD_TYPE', `${at}.animations`, `is ${show(o.animations)}; a table keyed by animation name is required, {"<name>": {"duration": …, "tracks": [...]}}`);
+    } else {
+      for (const [name, anim] of Object.entries(o.animations)) {
+        if (name === 'idle') {
+          c.fail('CONFIG_ANIMATION_NAME_FREE', `${at}.animations.idle`, 'is the idle, which config.motion writes; an animation beside it needs another name');
+        } else if (!isPlainObject(anim)) {
+          c.fail('CONFIG_FIELD_TYPE', `${at}.animations.${name}`, `is ${show(anim)}; an animation object in rig-c's motion-spec shape is required ({"duration": …, "tracks": [...]}, and what else rigc reads)`);
+        }
+      }
+    }
+  }
+  if (c.problems.length > before || o === null) return null;
+  return { file, table: o.animations as Record<string, unknown> };
+}
+
+/**
+ * Every key an object in the JSON `text` names more than once, with the
+ * object's dotted path (`""` for the top level, `animations.smile.tracks[0]`
+ * below it) and how many times — what `JSON.parse` folds into its last value
+ * without a word. `text` must already parse; the walk is a reader of valid
+ * JSON only, and keys are compared after their escapes are decoded.
+ */
+export function repeatedKeys(text: string): Array<{ at: string; key: string; count: number }> {
+  const out: Array<{ at: string; key: string; count: number }> = [];
+  let i = 0;
+  const ws = (): void => {
+    while (i < text.length && ' \t\n\r'.includes(text[i])) i++;
+  };
+  const str = (): string => {
+    const start = i;
+    i++;
+    while (text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+    i++;
+    return JSON.parse(text.slice(start, i)) as string;
+  };
+  const value = (at: string): void => {
+    ws();
+    const ch = text[i];
+    if (ch === '{') {
+      i++;
+      const seen = new Map<string, number>();
+      ws();
+      if (text[i] === '}') {
+        i++;
+        return;
+      }
+      for (;;) {
+        ws();
+        const key = str();
+        seen.set(key, (seen.get(key) ?? 0) + 1);
+        ws();
+        i++; // the colon
+        value(at === '' ? key : `${at}.${key}`);
+        ws();
+        if (text[i++] === '}') break;
+      }
+      for (const [key, count] of seen) if (count > 1) out.push({ at, key, count });
+    } else if (ch === '[') {
+      i++;
+      ws();
+      if (text[i] === ']') {
+        i++;
+        return;
+      }
+      for (let k = 0; ; k++) {
+        value(`${at}[${k}]`);
+        ws();
+        if (text[i++] === ']') break;
+      }
+    } else if (ch === '"') str();
+    else while (i < text.length && !',]} \t\n\r'.includes(text[i])) i++;
+  };
+  value('');
+  return out;
 }
 
 /** The four sections `propose` drafts and a config carries: what a skeleton comparison reads of either. */
@@ -1499,9 +1695,10 @@ const BLINK_GROUP_EMPTY: Readonly<Record<'eyes' | 'brows', string>> = {
 };
 
 function checkMotion(c: Check, v: Json, bones: Set<string>, chains: Map<string, number>, regions: Json): void {
-  const m = c.object('config.motion', v, ['duration', 'tracks'], ['blink']);
+  const m = c.object('config.motion', v, ['duration', 'tracks'], ['blink', 'animations_from']);
   if (m === null) return;
   const p = 'config.motion';
+  if ('animations_from' in m) c.string(`${p}.animations_from`, m.animations_from);
   // Every bone property the idle will key, and the tracks that key it, in the
   // order idleMotion writes them: single and chain tracks, then the eyes
   // group, then the brows group.

@@ -70,12 +70,12 @@ import {
   splitSchedule,
   untestedIntervals,
 } from './autoreplay.ts';
-import { BARS, causeLines, REQUIREMENTS_DIR, type CheckReport, type PackLine, DEFAULT_PACK_SHAPE, DEFAULT_PAGE_EDGES, JUDGEMENT_LINES, type JudgementLine, packedBuildArgs, packedBuildLabel, type PackMode, type PackShape, type PageEdges, readFrameSet, REPORTED_LINES, type ReportedLine, type RigcRunner, runCheck, SEAM_MEAN_BAR, SOURCE_LINE, SEAM_PX_BAR, SEAM_PX_LEVEL, SEAM_PX_LEVEL_HIGH, SPINEBOY_YARDSTICK } from './check.ts';
-import { loadConfig, loadEarlyConfig } from './config.ts';
+import { BARS, besideIdleLine, causeLines, REQUIREMENTS_DIR, type CheckReport, type PackLine, DEFAULT_PACK_SHAPE, DEFAULT_PAGE_EDGES, JUDGEMENT_LINES, type JudgementLine, packedBuildArgs, packedBuildLabel, type PackMode, type PackShape, type PageEdges, readFrameSet, REPORTED_LINES, type ReportedLine, type RigcRunner, runCheck, SEAM_MEAN_BAR, SOURCE_LINE, SEAM_PX_BAR, SEAM_PX_LEVEL, SEAM_PX_LEVEL_HIGH, SPINEBOY_YARDSTICK } from './check.ts';
+import { loadConfig, loadConfigAndAnimations, loadEarlyConfig } from './config.ts';
 import { PartsError, type Problem, problemLine, refuseIfAny } from './errors.ts';
 import type { MeshQualityReport, MotionSchedule } from 'rig-c/mesh';
 import { encodeGif } from './gif.ts';
-import { CONTROL_SUFFIX } from './motion.ts';
+import { CONTROL_SUFFIX, withAnimations } from './motion.ts';
 import type { PaletteError } from './palette.ts';
 import { type LayerSet, readLayers } from './layers.ts';
 import { type PartRecord, readParts, writeParts } from './parts.ts';
@@ -637,7 +637,7 @@ function multiIntervalRun(
  * accepted it (issue #126 item 3; {@link motionGates}).
  */
 export function rigStage(input: RigStageInput, rigc: RigcRunner, scratch: string, log: Log): RigOutput {
-  const cfg = loadConfig(input.config);
+  const { config: cfg, animations: from } = loadConfigAndAnimations(input.config);
   const parts = readParts(join(input.parts, 'parts.json'));
   const images = new Map<string, Raster>();
   for (const p of parts.parts) {
@@ -647,7 +647,7 @@ export function rigStage(input: RigStageInput, rigc: RigcRunner, scratch: string
   const first = buildRig(cfg, parts, images, undefined, input.idleKeys ?? DEFAULT_IDLE_KEYS, input.reduce);
   const textsOf = (r: RigOutput): Array<[string, string]> => [
     ['rig.json', rigJsonText(r.rig)],
-    ['motion.json', rigJsonText(r.motion)],
+    ['motion.json', rigJsonText(withAnimations(r.motion, from === null ? null : from.table))],
     ['mesh_report.json', rigJsonText(r.meshReport)],
   ];
   const firstTexts = textsOf(first);
@@ -735,6 +735,7 @@ export function rigStage(input: RigStageInput, rigc: RigcRunner, scratch: string
   log(
     `  bones ${rig.rig.bones.length} (${rig.controls.length} control) slots ${rig.rig.slots.length} meshes ${rig.meshReport.length} regions ${regions} vertices ${vertices}; idle ${rig.motion.animations.idle.duration} s, ${tracks.length} track(s), ${keys} key(s)`,
   );
+  if (from !== null) log(`  animations beside the idle, from ${from.file} as written: ${Object.keys(from.table).join(', ') || 'none'}`);
   log(
     rig.idleKeys === 'ctl'
       ? `  idle keys ctl: ${rig.meshKeyed.length} mesh-driving bone(s) keyed by the idle, each keyed through a same-origin <bone>_ctl parent`
@@ -876,6 +877,8 @@ export function checkStage(input: CheckStageInput, rigc: RigcRunner, bin: string
   if (r.idle === null) log(`  loop: SKIP — ${fig.skipped?.loop ?? ''}`);
   else log(`  loop: idle ${r.idle.frames} frame(s) at ${r.idle.fps} fps, f0000 vs f${String(r.idle.lastIndex).padStart(4, '0')} (t = ${r.idle.duration}s): max |d| ${fig.loop_max_diff} (0 required)`);
   if (r.loopPhysics !== null) log(`  ${r.loopPhysics}`);
+  const beside = besideIdleLine(r.besideIdle);
+  if (beside !== null) log(`  ${beside}`);
   if (r.seamViewport === null || fig.seam_mean === null) log(`  seam: SKIP — ${fig.skipped?.seam ?? ''}`);
   else {
     log(

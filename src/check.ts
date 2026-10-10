@@ -1313,6 +1313,22 @@ export interface CheckReport {
   written: string[];
   /** Under `--requirements` only (issue #93): what `check.json`'s `requirements` block holds; null without the flag. */
   requirements: RequirementsBlock | null;
+  /**
+   * The animations `motion.json` holds beside the idle (issue #183), in its
+   * order: built and gated with the rig, measured by nothing here — every bar
+   * reads the idle. Empty when the idle is alone.
+   */
+  besideIdle: string[];
+}
+
+/**
+ * The one line `check` prints when `motion.json` holds animations beside the
+ * idle (issue #183), or null when it holds none, so a rig of the idle alone
+ * prints what it printed before.
+ */
+export function besideIdleLine(names: readonly string[]): string | null {
+  if (names.length === 0) return null;
+  return `beside the idle: ${names.length} animation(s), ${names.join(', ')} — built and gated by rigc with the rig, not measured: every bar here reads the idle`;
 }
 
 /**
@@ -1661,6 +1677,7 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
     problems,
     written,
     requirements: reqBlock,
+    besideIdle: isRecord(inp.motion.animations) ? Object.keys(inp.motion.animations).filter((n) => n !== 'idle') : [],
   };
 }
 

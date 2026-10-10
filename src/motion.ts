@@ -130,6 +130,18 @@ export interface MotionSpec {
   animations: { idle: { duration: number; loop: true; note: string; tracks: MotionTrack[] } };
 }
 
+/**
+ * The motion `motion.json` holds: the idle, and after it every animation the
+ * file `config.motion.animations_from` names, as read (issue #183) — nothing
+ * added, nothing re-keyed, nothing judged; each is rigc's to accept at the
+ * gate. With none, `motion` itself, so a config that names no file writes the
+ * bytes it wrote before the field existed.
+ */
+export function withAnimations(motion: MotionSpec, extra: Readonly<Record<string, unknown>> | null): MotionSpec | Record<string, unknown> {
+  if (extra === null) return motion;
+  return { ...motion, animations: { ...motion.animations, ...extra } };
+}
+
 /** One sine channel over an idle of `duration` seconds. */
 export function sineTrack(bone: string, property: string, amp: number, period: number, phase: number, base: number, duration: number): MotionTrack {
   const n = Math.round((duration / period) * KEYS_PER_PERIOD);
