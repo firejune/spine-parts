@@ -210,6 +210,47 @@ export const NOTCH: ContourCase = { name: 'notch', mask: blocks(20, 26, [[2, 2, 
 export const BOTTLE: ContourCase = { name: 'bottle', mask: blocks(20, 20, [[2, 2, 16, 16], [8, 6, 4, 6, 0], [9, 2, 2, 4, 0]]), params: { ...BASE } };
 
 /**
+ * STRAND (issue #188): a 10x60 bar at (10, 4) in 30x70, the strand a chain
+ * hangs down. At margin 1 and tolerance 0 its outline is the rectangle x 9..21,
+ * y 3..65 less its four corner pixels — 12 vertices, as CONVEX's. {@link
+ * STRAND_CHAIN} runs down its middle, x 15: link 0 from y 10 to 30, link 1 to
+ * 50, link 2 to the tip at 62. Every link is vertical, so every rib is the row
+ * y = const from the outline's right edge x 21 to its left edge x 9, 12 px; at
+ * spacing 8 it is cut into ⌈12 / 8⌉ = 2 parts, so each rib is (21, y) (15, y)
+ * (9, y). With stations 1 the ribs are at y 10, 20 (link 0's middle), 30, 40,
+ * 50 and 56 (link 2's middle): 6 ribs, 12 ends on the outline and 6 points
+ * inside. A background point (16, j·8) is kept only 4 px or more from every
+ * rib row and from the outline: (16, 16) and (16, 24). Vertices 24 + 6 + 2 =
+ * 32, triangles 2·32 − 24 − 2 = 38. With stations 0 the rows are y 10, 30 and
+ * 50, and the background keeps (16, 16), (16, 24), (16, 40) and (16, 56):
+ * vertices 18 + 3 + 4 = 25.
+ */
+export const STRAND: ContourCase = { name: 'strand', mask: blocks(30, 70, [[10, 4, 10, 60]]), params: { ...BASE } };
+
+/** The chain down {@link STRAND}'s middle: its points then its tip, part-image px. */
+export const STRAND_CHAIN: ReadonlyArray<readonly [number, number]> = [
+  [15, 10],
+  [15, 30],
+  [15, 50],
+  [15, 62],
+];
+
+/**
+ * NOTCHED (issue #188): a 40x50 block at (10, 4) in 60x60 with its top-left
+ * 10x14 corner cleared (x 10..19, y 4..17), and a one-link chain from (30, 20)
+ * down to (30, 50). At margin 1, tolerance 0 the outline has 18 vertices; the
+ * concave corner the growth leaves is (19, 17). The rib at y 20 runs from
+ * (51, 20) through the joint (30, 20) to (9, 20), each 21 px half one part at
+ * spacing 32; no background point is kept (none of (32, 32), (32, 48), … is
+ * 16 px from the rib and the outline). Its left edge (30, 20)–(9, 20) has the
+ * apexes (19, 17) above and (10, 54) below, and the circle through (9, 20),
+ * (30, 20), (19, 17) — centre (19.5, 36.83), r² 393.6 — holds (10, 54) (d²
+ * 385.1): the edge is not locally Delaunay, and a triangulation free to flip it
+ * would.
+ */
+export const NOTCHED: ContourCase = { name: 'notched', mask: blocks(60, 60, [[10, 4, 40, 50], [10, 4, 10, 14, 0]]), params: { ...BASE, spacing: 32 } };
+
+/**
  * The cases that build, in order. The gate proof (selftest `CT27`) carries all
  * but FULL, whose PNG has no transparent texel — which rig-c's spine-html
  * profile refuses for the image (A19), whatever attachment draws it.

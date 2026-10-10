@@ -188,7 +188,7 @@ import { type BoneEntry, type CharacterConfig, CONFIG_REQUIRES, type ContourRegi
 import { RIG_KEYS, RIG_SKIN_CONSTRAINT_KEYS } from 'rig-c/src/rig.ts';
 import { type BoneTransform, computeExactFrameTransforms, cropToSpineY, toWorld } from './src/coords.ts';
 import { artMask, contourFit, type ContourMesh, contourMesh, contourOutline, type ContourParams, type ContourRegion, contourTopologyProblems, delaunayViolations, GRID, growSilhouette, inCircle, keepPoints, MAX_SIDE, marginDisc, outlineInRegions, withinMarginSquared } from './src/contour.ts';
-import { BASE, blockOutline, blocks, BOTTLE, BUILDING, CONCAVE, type ContourCase, CONVEX, EMPTY, FEATHERED, FEATHERED_CORE, FULL, HOLE, ISLANDS, NOTCH, PINCH, REGION, REGION_FAR_BACKGROUND, SPIKE, STRIP } from './fixtures/contour.ts';
+import { BASE, blockOutline, blocks, BOTTLE, BUILDING, CONCAVE, type ContourCase, CONVEX, EMPTY, FEATHERED, FEATHERED_CORE, FULL, HOLE, ISLANDS, NOTCH, NOTCHED, PINCH, REGION, REGION_FAR_BACKGROUND, SPIKE, STRAND, STRAND_CHAIN, STRIP } from './fixtures/contour.ts';
 import { ART_ALPHA, counterClockwiseInSpineWorld, latticeMesh } from './src/mesh.ts';
 import { type AcceptedOperation, type AlphaMask, checkHullOrder, type TrackAmplitude, earClip, findSelfIntersection, measureAuthoredMeshFit, measureMeshQuality, type MeshQualityReport, type MeshReductionInput, offsetPolygon, type ReducedMesh, type ReductionSkinning, simplifyClosedPolygon, traceAlphaOutline, traceOutline, windCounterClockwiseInSpineWorld, writeMeshQualityReport } from 'rig-c/mesh';
 import { allocationClause, AUTO_SOURCE_FIT_CONNECTIVITY, AUTO_THRESHOLD, autoReductionInput, autoSource, type AutoVerdict, autoVerdict, CIRCLE_CLEARANCE, circlePolygon, type Reducer, type ReductionResult, reductionKey, type Residual, residuals, reuseReductions, runReduction, sourceWeights, stageBClause, legacyArtCoverage, terminationText, unboundedClause, worstRegion, worstResidual } from './src/automesh.ts';
@@ -1434,6 +1434,59 @@ function runConfigSuite(): number {
   } finally {
     rmSync(af, { recursive: true, force: true });
   }
+
+  // CF75 — issue #188: meshes.<part>.ribs.<chain>.stations is a whole number, 0 or more, and required; a contour or an
+  // automatic mesh with ribs on a chain its segments name loads, and each malformed entry is refused at its field.
+  const ribbed = (ribs: unknown, mode: 'contour' | 'auto' | 'grid' = 'contour'): Record<string, unknown> => {
+    const c = minimalConfig();
+    const robe = (c.meshes as Record<string, Record<string, unknown>>).robe;
+    if (mode !== 'grid') delete robe.grid;
+    if (mode === 'contour') robe.contour = { tolerance: 0, margin: 1, spacing: 4 };
+    if (mode === 'auto') robe.auto = withPolicyMotion(syntheticPolicy(4));
+    robe.ribs = ribs;
+    return c;
+  };
+  const RAT = 'config.meshes.robe.ribs';
+  const one75 = (e: PartsError | null, code: string, object: string, detail?: string): boolean =>
+    e !== null && e.problems.length === 1 && e.problems[0].code === code && e.problems[0].object === object && (detail === undefined || e.problems[0].detail === detail);
+  const show75 = (e: PartsError | null): string => (e === null ? 'loads' : e.problems.map((q) => `${q.code} ${q.object}: ${q.detail}`).join('; '));
+  const good75 = refusals(() => parseConfig(ribbed({ hem: { stations: 1 } })));
+  const auto75 = refusals(() => parseConfig(ribbed({ hem: { stations: 0 }, 'x-why': 'selftest' }, 'auto')));
+  const half75 = refusals(() => parseConfig(ribbed({ hem: { stations: 1.5 } })));
+  const neg75 = refusals(() => parseConfig(ribbed({ hem: { stations: -1 } })));
+  const text75 = refusals(() => parseConfig(ribbed({ hem: { stations: '1' } })));
+  const none75 = refusals(() => parseConfig(ribbed({ hem: {} })));
+  const typo75 = refusals(() => parseConfig(ribbed({ hem: { stations: 1, station: 1 } })));
+  say(
+    'CF75_RIB_STATIONS_ARE_A_WHOLE_NUMBER_FROM_0_REQUIRED_AND_EACH_MALFORMED_ENTRY_IS_REFUSED_AT_ITS_FIELD',
+    good75 === null &&
+      auto75 === null &&
+      one75(half75, 'CONFIG_FIELD_TYPE', `${RAT}.hem.stations`, 'is 1.5; an integer at or above 0 is required') &&
+      one75(neg75, 'CONFIG_FIELD_TYPE', `${RAT}.hem.stations`, 'is -1; an integer at or above 0 is required') &&
+      one75(text75, 'CONFIG_FIELD_TYPE', `${RAT}.hem.stations`, 'is "1"; an integer at or above 0 is required') &&
+      one75(none75, 'CONFIG_FIELD_PRESENT', `${RAT}.hem.stations`) &&
+      one75(typo75, 'CONFIG_KEY_KNOWN', `${RAT}.hem.station`),
+    `contour, hem stations 1 -> ${show75(good75)}; auto, hem stations 0 and a record -> ${show75(auto75)}; planted 1.5 -> ${show75(half75)}; -1 -> ${show75(neg75)}; "1" -> ${show75(text75)}; {} -> ${show75(none75)}; a misspelt key -> ${show75(typo75)}`,
+    'issue #188: the stations between a link\'s origin and its end are counted ribs, so a fraction, a negative and a string have no reading; a rib at every joint is always placed, so stations is required rather than defaulted to a number the author did not write',
+  );
+
+  // CF76 — issue #188: ribs belong to the two modes that place vertices where declared, and to a chain the mesh's
+  // segments name; a lattice with ribs, a key that is a bone and not a chain, and an object that names no chain are each
+  // refused by name.
+  const grid76 = refusals(() => parseConfig(ribbed({ hem: { stations: 0 } }, 'grid')));
+  const bone76 = refusals(() => parseConfig(ribbed({ chest: { stations: 0 } })));
+  const empty76 = refusals(() => parseConfig(ribbed({})));
+  const list76 = refusals(() => parseConfig(ribbed([])));
+  say(
+    'CF76_RIBS_ON_A_LATTICE_ON_A_NAME_THAT_IS_NO_CHAIN_OF_THE_SEGMENTS_OR_ON_NO_CHAIN_ARE_REFUSED_BY_NAME',
+    good75 === null &&
+      one75(grid76, 'CONFIG_RIBS_MODE', RAT) &&
+      one75(bone76, 'CONFIG_NAME_RESOLVES', `${RAT}.chest`, 'names "chest", which is not a chain config.bones declares; a chain among this mesh\'s segments is required (hem)') &&
+      one75(empty76, 'CONFIG_FIELD_TYPE', RAT) &&
+      one75(list76, 'CONFIG_FIELD_TYPE', RAT, 'is []; an object of chain name -> { stations } is required'),
+    `planted on a lattice -> ${show75(grid76)}; on the bone chest -> ${show75(bone76)}; {} -> ${show75(empty76)}; [] -> ${show75(list76)}; the contour positive -> ${show75(good75)}`,
+    "issue #188: a lattice's vertices are its grid's corners, so a row cannot be placed on it — refused, never ignored; a rib runs across a chain the mesh is weighted along, so a name that is not one of its chains has nothing to place a rib on, and an empty object places nothing",
+  );
   return bad();
 }
 
@@ -14011,6 +14064,114 @@ function runContourSuite(): number {
     'the 2x2 island in the 12x12 hole is not the largest and is under the figure, so it leaves the art; the hole is then the whole 144 px and is filled as every hole is — the island\'s pixels stay inside the mesh, drawn, and are counted as filled hole',
   );
 
+  // CT37–CT41 — issue #188: ribs along a chain.
+  const ribbed = (c: ContourCase, chain: ReadonlyArray<readonly [number, number]>, stations: number, over: Partial<ContourParams> = {}): ContourMesh | Problem[] =>
+    contourMesh(c.name, c.mask, { ...c.params, ...over, ribs: [{ chain: 'strand', points: chain, stations }] });
+  const edgeSet = (m: ContourMesh): Set<string> => {
+    const e = new Set<string>();
+    for (let t = 0; t < m.triangles.length; t += 3) for (let k = 0; k < 3; k++) e.add([m.triangles[t + k], m.triangles[t + ((k + 1) % 3)]].sort((a, b) => a - b).join(','));
+    return e;
+  };
+  const ribRows = (m: ContourMesh): boolean => {
+    const e = edgeSet(m);
+    return (m.ribs ?? []).every((r) => r.vertices.every((v, i) => i === 0 || e.has([r.vertices[i - 1], v].sort((a, b) => a - b).join(','))));
+  };
+  const ribText = (m: ContourMesh): string => (m.ribs ?? []).map((r) => `${r.name}: ${vertexText(r.vertices.map((v) => m.vertices[v]))}`).join('; ');
+
+  // CT37 — absent and empty are the mesh it always was, on every building case and the strand; declared is not.
+  const absent37 = [...BUILDING, STRAND].every((c) => JSON.stringify(contourOf(c)) === JSON.stringify(contourOf(c, { ...c.params, ribs: [] })));
+  const plain37 = built(contourOf(STRAND));
+  const declared37 = built(ribbed(STRAND, STRAND_CHAIN, 0));
+  say(
+    'CT37_RIBS_ABSENT_OR_EMPTY_LEAVE_EVERY_MESH_BYTE_IDENTICAL_AND_DECLARED_ONES_CHANGE_IT',
+    absent37 && plain37 !== null && !('ribs' in plain37) && !('ribs' in plain37.report) && declared37 !== null && JSON.stringify(declared37) !== JSON.stringify(plain37) && declared37.report.ribs?.length === 3,
+    `ribs [] against no field, ${BUILDING.length + 1} cases: ${absent37 ? 'every one byte-identical' : 'DIFFERENT'}; no field: ${plain37 === null ? 'refused' : `${plain37.vertices.length} vertices, report keys ${'ribs' in plain37.report ? 'with' : 'without'} ribs`}; planted, the strand's chain at stations 0: ${declared37 === null ? 'refused' : `${declared37.vertices.length} vertices, ${declared37.report.ribs?.length} rib(s)`}`,
+    'issue #188: absent means none, and none runs nothing — the outline, the candidates and the triangulation are the ones they were, and neither the mesh nor its report gains a key',
+  );
+
+  // CT38 — the strand: every rib, its ends and its middle, by hand (fixtures/contour.ts STRAND).
+  const s38 = built(ribbed(STRAND, STRAND_CHAIN, 1));
+  const z38 = built(ribbed(STRAND, STRAND_CHAIN, 0));
+  const rows38 = [10, 20, 30, 40, 50, 56];
+  const want38 = (m: ContourMesh, ys: number[]): boolean =>
+    (m.ribs ?? []).length === ys.length &&
+    (m.ribs ?? []).every((r, k) => r.name === `rib strand link ${Math.floor(k / (ys.length / 3))} station ${k % (ys.length / 3)}` && sameVertices(r.vertices.map((v) => m.vertices[v]), [[21, ys[k]], [15, ys[k]], [9, ys[k]]]) && r.vertices[0] < m.hull && r.vertices[2] < m.hull && r.vertices[1] >= m.hull);
+  say(
+    'CT38_A_STRAND_WITH_A_THREE_LINK_CHAIN_CARRIES_ITS_HAND_COUNTED_RIBS_EACH_A_ROW_OF_EDGES',
+    s38 !== null &&
+      z38 !== null &&
+      want38(s38, rows38) &&
+      want38(z38, [10, 30, 50]) &&
+      s38.hull === 24 &&
+      s38.vertices.length === 32 &&
+      s38.triangles.length / 3 === 38 &&
+      sameVertices(s38.vertices.slice(s38.hull + 6), [[16, 16], [16, 24]]) &&
+      z38.hull === 18 &&
+      z38.vertices.length === 25 &&
+      sameVertices(z38.vertices.slice(z38.hull + 3), [[16, 16], [16, 24], [16, 40], [16, 56]]) &&
+      JSON.stringify(s38.report.interiorBySource) === JSON.stringify([{ source: 'background', vertices: 2 }, { source: 'ribs', vertices: 6 }]) &&
+      s38.report.nonDelaunayEdges === 0 &&
+      ribRows(s38) &&
+      ribRows(z38),
+    s38 === null || z38 === null
+      ? `refused: ${contourCodes(ribbed(STRAND, STRAND_CHAIN, 1))}; ${contourCodes(ribbed(STRAND, STRAND_CHAIN, 0))}`
+      : `stations 1: ${ribText(s38)}; hull ${s38.hull}, ${s38.vertices.length} vertices, ${s38.triangles.length / 3} triangles, background ${vertexText(s38.vertices.slice(s38.hull + 6))}, every rib a row of edges ${ribRows(s38)}; stations 0: ${z38.ribs?.length} ribs, hull ${z38.hull}, ${z38.vertices.length} vertices, background ${vertexText(z38.vertices.slice(z38.hull + 3))}`,
+    'issue #188: a rib at each link origin and at each station, across the chain to the outline on both sides and cut at the background spacing; its ends join the hull, its middle is an interior vertex, and every consecutive pair is an edge — the row a strand folds along',
+  );
+
+  // CT39 — a rib that leaves the art (a joint off the part, a station past its end) and two ribs that meet are refused by name.
+  const off39 = contourMesh('strand', STRAND.mask, { ...STRAND.params, ribs: [{ chain: 'off', points: [[25, 10], [25, 30]], stations: 0 }] });
+  const past39 = contourMesh('strand', STRAND.mask, { ...STRAND.params, ribs: [{ chain: 'long', points: [[15, 10], [15, 40], [15, 90]], stations: 1 }] });
+  const bend39 = contourMesh('bend', blocks(40, 40, [[4, 4, 32, 32]]), { ...BASE, ribs: [{ chain: 'bend', points: [[10, 20], [20, 20], [20, 30]], stations: 0 }] });
+  say(
+    'CT39_A_RIB_OFF_THE_ART_OR_TWO_RIBS_THAT_MEET_ARE_REFUSED_BY_NAME',
+    has(off39, 'CONTOUR_RIB_ART', 'rib off link 0 station 0', "the chain's root is at (25, 10)", 'alpha 0', 'not art (alpha above 8)') &&
+      has(past39, 'CONTOUR_RIB_ART', 'rib long link 1 station 1', 'station 1 of the link is at (15, 65)') &&
+      Array.isArray(past39) &&
+      past39.length === 1 &&
+      has(bend39, 'CONTOUR_RIB_CROSSING', 'rib bend link 0 station 0', 'from (10, 3) to (10, 37) meets rib bend link 1 station 0') &&
+      s38 !== null,
+    `a chain beside the strand: ${Array.isArray(off39) ? off39.map(problemLine).join('; ') : 'BUILT'}; a link past the strand's end: ${Array.isArray(past39) ? past39.map(problemLine).join('; ') : 'BUILT'}; a right-angle bend in a block: ${Array.isArray(bend39) ? bend39.map(problemLine).join('; ') : 'BUILT'}; the strand itself (CT38): ${s38 === null ? 'refused' : 'built'}`,
+    "issue #188: a rib is the part's cross-section through its chain, so a point off the art has none to give, and nothing is placed in its stead; the bend's root rib (the column x 10) and its joint rib (the bisector's normal, the diagonal through (20, 20)) meet at (10, 30), inside the block — two rows through one point",
+  );
+
+  // CT40 — a link shorter than the outline tolerance, a joint that folds straight back, and a fractional station count.
+  const short40 = contourMesh('strand', STRAND.mask, { ...STRAND.params, tolerance: 2, ribs: [{ chain: 'stub', points: [[15, 10], [15, 11], [15, 40]], stations: 0 }] });
+  const fold40 = contourMesh('strand', STRAND.mask, { ...STRAND.params, ribs: [{ chain: 'fold', points: [[15, 20], [15, 40], [15, 30]], stations: 0 }] });
+  const frac40 = ribbed(STRAND, STRAND_CHAIN, 1.5);
+  const ok40 = built(contourMesh('strand', STRAND.mask, { ...STRAND.params, tolerance: 1, ribs: [{ chain: 'stub', points: [[15, 10], [15, 11], [15, 40]], stations: 0 }] }));
+  say(
+    'CT40_A_LINK_SHORTER_THAN_THE_TOLERANCE_A_FOLD_BACK_AND_A_FRACTIONAL_STATION_COUNT_ARE_REFUSED_BY_NAME',
+    has(short40, 'CONTOUR_RIB_LINK', 'chain "stub" link 0', 'runs 1 px', 'outline tolerance 2 px') &&
+      has(fold40, 'CONTOUR_RIB_LINK', 'chain "fold" link 1', 'turns straight back') &&
+      has(frac40, 'CONTOUR_PARAMETER', 'ribs[0].stations', 'is 1.5') &&
+      ok40 !== null &&
+      ok40.ribs?.length === 2,
+    `link 0 of 1 px at tolerance 2: ${contourCodes(short40)} (${Array.isArray(short40) ? short40[0].detail : ''}); a chain that turns back at its joint: ${contourCodes(fold40)}; stations 1.5: ${contourCodes(frac40)}; the 1 px link at tolerance 1: ${ok40 === null ? 'refused' : `${ok40.ribs?.length} ribs`}`,
+    "issue #188: two rows closer than the outline's own simplification error are not two cross-sections the outline can hold, a joint whose links point opposite ways has no across, and a station count is a count — none is mended",
+  );
+
+  // CT41 — a rib edge a Delaunay triangulation would flip away is kept: it is locked, and the report does not count it.
+  const n41 = built(contourMesh(NOTCHED.name, NOTCHED.mask, { ...NOTCHED.params, ribs: [{ chain: 'strand', points: [[30, 20], [30, 50]], stations: 0 }] }));
+  const rib41 = n41?.ribs?.[0];
+  say(
+    'CT41_A_RIB_EDGE_THAT_IS_NOT_DELAUNAY_IS_KEPT_AS_AN_EDGE_AND_NOT_COUNTED_AGAINST_THE_TRIANGULATION',
+    n41 !== null &&
+      rib41 !== undefined &&
+      rib41.vertices.length === 3 &&
+      sameVertices(rib41.vertices.map((v) => n41.vertices[v]), [[51, 20], [30, 20], [9, 20]]) &&
+      ribRows(n41) &&
+      delaunayViolations(n41.vertices, n41.triangles) === 1 &&
+      delaunayViolations(n41.vertices, n41.triangles, [[rib41.vertices[1], rib41.vertices[2]]]) === 0 &&
+      n41.report.nonDelaunayEdges === 0 &&
+      n41.hull === 18 &&
+      n41.vertices.length === 19,
+    n41 === null
+      ? `refused: ${contourCodes(contourMesh(NOTCHED.name, NOTCHED.mask, { ...NOTCHED.params, ribs: [{ chain: 'strand', points: [[30, 20], [30, 50]], stations: 0 }] }))}`
+      : `${ribText(n41)}; a row of edges ${ribRows(n41)}; non-Delaunay edges read with nothing locked ${delaunayViolations(n41.vertices, n41.triangles)}, with the rib's left edge locked ${delaunayViolations(n41.vertices, n41.triangles, rib41 === undefined ? [] : [[rib41.vertices[1], rib41.vertices[2]]])}; report ${n41.report.nonDelaunayEdges}; hull ${n41.hull}, ${n41.vertices.length} vertices`,
+    "issue #188: the circle through the rib's left edge and the corner (19, 17) holds the apex (10, 54) on its other side (fixtures/contour.ts NOTCHED, by hand), so a free triangulation flips that edge away and the strand has no row there; the edge is recovered by flipping the edges across it and then locked, as an outline edge is, and the Delaunay count is read with it excused, exactly as the outline's edges are",
+  );
+
   runContourGrowthControls(say, built, has);
   runOutlineInRegionControls(say, built);
 
@@ -19376,6 +19537,91 @@ function runAutoMeshSuite(): number {
     row1Sy?.art_coverage === 1 && caseSy !== undefined && caseSy.mask.alpha[10 * 24 + 18] === 0 && caseMd5Sy && wholeCovSy === pyRound(80 / 81, 5),
     `art_coverage ${row1Sy?.art_coverage}; motion case mask at (18, 10): ${caseSy?.mask.alpha[10 * 24 + 18]}, md5 ${caseMd5Sy ? 'the cleared mask\'s' : 'not the cleared mask\'s'}; planted whole mask: ${wholeCovSy} (by hand 80/81 = ${pyRound(80 / 81, 5)})`,
     'the coverage figure and the motion gate\'s art bounds read the art the mesh was built for; a reader left on the whole mask would report the crumb the declaration accepted as uncovered',
+  );
+
+  // AM57–AM59 — issue #188: ribs in the automatic mode. The fixture's cloth (a 16x8 block at (4, 4) in 24x16) with the
+  // hem chain carried into it: (8, 8), (16, 8), tip (24, 8); stations 0 places a rib at each link origin.
+  const HEM_IN_CLOTH: Array<[number, number]> = [[8, 8], [16, 8], [24, 8]];
+  const ribSpec57 = syntheticPolicy(4);
+  const src57 = autoSource('cloth', clothMask(), ribSpec57, [{ chain: 'hem', points: HEM_IN_CLOTH, stations: 0 }]);
+  const plain57 = autoSource('cloth', clothMask(), ribSpec57);
+  const in57 = Array.isArray(src57) ? null : autoReductionInput({ part: 'cloth', mask: clothMask(), ox: 0, oy: 0, spec: { ...ribSpec57, protect: { vertices: [5, 1] } }, source: src57, weights: null, boneOrder: [] });
+  const ran57 = in57 === null ? null : runReduction('cloth', in57);
+  const res57 = ran57 === null || 'code' in ran57 ? null : ran57.mesh;
+  const kept57 = (pts: ReadonlyArray<readonly [number, number]>, at: readonly [number, number]): number => pts.findIndex((q) => q[0] === at[0] && q[1] === at[1]);
+  const rows57 =
+    res57 !== null && !Array.isArray(src57)
+      ? (src57.ribs ?? []).every((r) => {
+          const idx = r.vertices.map((v) => kept57(res57.points, src57.vertices[v]));
+          const e = new Set<string>();
+          for (let t = 0; t < res57.triangles.length; t += 3) for (let k = 0; k < 3; k++) e.add([res57.triangles[t + k], res57.triangles[t + ((k + 1) % 3)]].sort((a, b) => a - b).join(','));
+          return idx.every((i) => i >= 0) && idx.every((v, i) => i === 0 || e.has([idx[i - 1], v].sort((a, b) => a - b).join(',')));
+        })
+      : false;
+  const want57: Array<[number, number]> = [[8, 3], [8, 5.5], [8, 8], [8, 10.5], [8, 13]];
+  // AM57 — the source carries the ribs, every rib vertex is protected (after the author's, as written) and sent as a
+  // named line with bound 0, and the reduced mesh keeps every rib vertex and every rib edge.
+  say(
+    'AM57_THE_AUTO_SOURCE_CARRIES_THE_RIBS_AND_THE_REDUCTION_KEEPS_EVERY_RIB_VERTEX_AND_EDGE_AS_A_NAMED_LINE',
+    !Array.isArray(src57) &&
+      !Array.isArray(plain57) &&
+      src57.ribs?.length === 2 &&
+      sameVertices(src57.ribs[0].vertices.map((v) => src57.vertices[v]), want57) &&
+      sameVertices(src57.ribs[1].vertices.map((v) => src57.vertices[v]), want57.map(([, y]): [number, number] => [16, y])) &&
+      in57 !== null &&
+      JSON.stringify(in57.protect.vertices) === JSON.stringify([5, 1, ...[...new Set(src57.ribs.flatMap((r) => r.vertices))].filter((v) => v !== 5 && v !== 1).sort((a, b) => a - b)]) &&
+      JSON.stringify(in57.lines) === JSON.stringify(src57.ribs.map((r) => ({ name: r.name, vertices: r.vertices, closed: false, maxDeviation: 0 }))) &&
+      res57 !== null &&
+      rows57 &&
+      res57.points.length < src57.vertices.length,
+    Array.isArray(src57)
+      ? `source refused: ${src57.map(problemLine).join('; ')}`
+      : `source ${src57.vertices.length} vertices (without ribs ${Array.isArray(plain57) ? 'refused' : plain57.vertices.length}); ${(src57.ribs ?? []).map((r) => `${r.name}: ${vertexText(r.vertices.map((v) => src57.vertices[v]))}`).join('; ')}; protect.vertices ${JSON.stringify(in57?.protect.vertices)}; lines ${JSON.stringify(in57?.lines)}; result ${res57 === null ? (ran57 !== null && 'code' in ran57 ? problemLine(ran57) : 'none') : `${res57.points.length} vertices, every rib vertex and edge kept ${rows57}`}`,
+    "issue #188: the root rib is the column x 8 from the outline's top edge y 3 through the joint (8, 8) to its bottom edge y 13, each 5 px half cut at spacing 4 into 2 — so (8, 5.5) and (8, 10.5); the reduction removes what its bounds allow and none of these, because each is protected, and rig-c's named line keeps the row's edges from its post-pass",
+  );
+
+  // AM58 — absent: the source and the reduction input are the ones they were (no lines key, the author's protect list
+  // alone); planted: the author's protect list naming a rib vertex keeps it once, at the author's place.
+  const in58 = Array.isArray(plain57) ? null : autoReductionInput({ part: 'cloth', mask: clothMask(), ox: 0, oy: 0, spec: { ...ribSpec57, protect: { vertices: [2] } }, source: plain57, weights: null, boneOrder: [] });
+  const empty58 = autoSource('cloth', clothMask(), ribSpec57, []);
+  const dup58 = Array.isArray(src57) ? null : autoReductionInput({ part: 'cloth', mask: clothMask(), ox: 0, oy: 0, spec: { ...ribSpec57, protect: { vertices: [src57.ribs?.[1].vertices[2] ?? -1] } }, source: src57, weights: null, boneOrder: [] });
+  const ribCount58 = Array.isArray(src57) ? 0 : new Set((src57.ribs ?? []).flatMap((r) => r.vertices)).size;
+  say(
+    'AM58_WITHOUT_RIBS_THE_SOURCE_AND_THE_CALL_ARE_THE_ONES_THEY_WERE_AND_A_RIB_VERTEX_THE_AUTHOR_PROTECTS_IS_LISTED_ONCE',
+    in58 !== null &&
+      !('lines' in in58) &&
+      JSON.stringify(in58.protect.vertices) === '[2]' &&
+      JSON.stringify(empty58) === JSON.stringify(plain57) &&
+      !Array.isArray(plain57) &&
+      !('ribs' in plain57) &&
+      dup58 !== null &&
+      dup58.protect.vertices.length === ribCount58 &&
+      dup58.protect.vertices[0] === (Array.isArray(src57) ? -1 : src57.ribs?.[1].vertices[2]),
+    `no ribs: lines ${in58 === null ? 'n/a' : 'lines' in in58 ? 'SENT' : 'not sent'}, protect.vertices ${JSON.stringify(in58?.protect.vertices)}; ribs [] against none: ${JSON.stringify(empty58) === JSON.stringify(plain57) ? 'byte-identical' : 'DIFFERENT'}; planted, the author protecting a rib vertex: ${JSON.stringify(dup58?.protect.vertices)} (${ribCount58} rib vertices)`,
+    'issue #188: the call a part without ribs makes is the call it always made, byte for byte (the key reuseReductions caches by included), and the protected list is a set the author\'s order leads',
+  );
+
+  // AM59 — the rig stage: the row of a contour and of an automatic mesh echoes the ribs — what was declared, the ribs
+  // placed and their vertices — and a mesh without ribs writes no such key.
+  const row59 = (mesh: Record<string, unknown>): MeshReport | string => {
+    const c = autoRigConfig();
+    c.meshes = { cloth: mesh };
+    try {
+      return buildRig(parseConfig(c), rigParts(), rigImages()).meshReport.find((m) => m.part === 'cloth') ?? 'no row';
+    } catch (e) {
+      return e instanceof PartsError ? e.problems.map(problemLine).join('; ') : String(e);
+    }
+  };
+  const c59 = row59({ contour: { tolerance: 0, margin: 1, spacing: 4 }, r: 8, segments: ['hem'], ribs: { hem: { stations: 0 } } });
+  const a59 = row59({ auto: withPolicyMotion(syntheticPolicy(4)), r: 8, segments: ['hem'], ribs: { hem: { stations: 0 } } });
+  const n59 = row59({ contour: { tolerance: 0, margin: 1, spacing: 4 }, r: 8, segments: ['hem'] });
+  const echo59 = (r: MeshReport | string): string => (typeof r === 'string' ? r : JSON.stringify('ribs' in r ? r.ribs : null));
+  const want59 = JSON.stringify({ chains: { hem: { stations: 0 } }, count: 2, vertices: 10 });
+  say(
+    'AM59_THE_MESH_ROW_ECHOES_THE_RIBS_IN_THE_CONTOUR_AND_THE_AUTOMATIC_MODE_AND_NOT_WITHOUT_THEM',
+    echo59(c59) === want59 && echo59(a59) === want59 && typeof n59 !== 'string' && !('ribs' in n59) && typeof c59 !== 'string' && 'contour' in c59 && c59.contour.ribs?.length === 2,
+    `contour: ${echo59(c59)}; auto: ${echo59(a59)}; contour without ribs: ${echo59(n59)}`,
+    'issue #188: mesh_report.json is what an agent reads, so it says how many ribs each part carries and how many vertices hold them (two ribs of five on the fixture: two ends, the joint and a cut each side); each rib\'s own vertex list is in the contour report beside it',
   );
 
   return bad();
