@@ -1,6 +1,6 @@
 # rig-parts
 
-**AI-authored Spine 2D character rigs from one anime painting, verified before they
+**AI-authored 2D character rigs from one anime painting, verified before they
 are written.** rig-parts takes a single character painting and the layers
 [See-through](https://github.com/shitagaki-lab/see-through) decomposed it into,
 merges them into measured rig-space parts, authors weighted meshes, bone chains
@@ -15,7 +15,7 @@ input is silent.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/firejune/rig-parts/main/assets/demo-source.png" alt="The demo painting: a generated full-body character in a white and pink frilled dress with long pink twin tails, standing with her hands clasped" height="420" />
-  <img src="https://raw.githubusercontent.com/firejune/rig-parts/main/assets/demo-idle.png" alt="The same character as a Spine rig, breathing, blinking once and swaying her hair, sleeves and skirt in a four-second loop" height="420" />
+  <img src="https://raw.githubusercontent.com/firejune/rig-parts/main/assets/demo-idle.png" alt="The same character rigged, breathing, blinking once and swaying her hair, sleeves and skirt in a four-second loop" height="420" />
 </p>
 
 <p align="center">
@@ -150,7 +150,7 @@ atlas written by anything else would have no oracle behind it.
 | --- | --- | --- |
 | painting + See-through layers → parts and specs | **rig-parts** | the merge of two runs, the measurements, the rig spec and motion spec |
 | specs → Spine skeleton data | **[rig-c](https://github.com/firejune/rigc)** | compile, the gate (rigc's own validator in an install; the round trip through `spine-core` where the runtime is beside it, as in this repository's CI), the named assertions, the packer, the renderer |
-| skeleton data → a page | **[spine-html](https://github.com/firejune/spine-html)**, a sibling project | a DOM renderer; rigc's `spine-html` profile is its policy, and every build here is gated under that profile as well as under `spine` |
+| skeleton data → a page | **[rig-play](https://github.com/firejune/rig-play)** (formerly spine-html), a sibling project | a DOM renderer; rigc's `spine-html` profile is its policy, and every build here is gated under that profile as well as under `spine` |
 
 rig-parts never writes Spine data itself. Everything on disk under `check/build/`
 was written by rig-c after its own gate passed.

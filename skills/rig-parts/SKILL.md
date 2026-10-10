@@ -1,6 +1,6 @@
 ---
 name: rig-parts
-description: Turn one anime character painting and its See-through layer decomposition into a verified Spine 4.3 rig — measured parts, weighted meshes, bone chains and a looping idle — with rig-parts, which gates everything through rig-c before it is written. Use for a request to rig or animate a single character painting in Spine, to run or read rig-parts layers, sheet, assemble, propose, rig, check, loop or build, or to write or fix a rig-parts config.json. Not for cutting art into parts by hand, for authoring a rig from loose PNGs (that is the rigc skill), for expressions or lip-sync, or for running See-through itself.
+description: Turn one anime character painting and its See-through layer decomposition into a verified 2D character rig (Spine 4.3 skeleton data) — measured parts, weighted meshes, bone chains and a looping idle — with rig-parts, which gates everything through rig-c before it is written. Use for a request to rig or animate a single character painting, to run or read rig-parts layers, sheet, assemble, propose, rig, check, loop or build, or to write or fix a rig-parts config.json. Not for cutting art into parts by hand, for authoring a rig from loose PNGs (that is the rigc skill), for expressions or lip-sync, or for running See-through itself.
 license: MIT
 compatibility: Requires Bun 1.2 or later. The tool is the npm package rig-parts (bunx rig-parts, or bun add -d rig-parts); rig-c is installed with it. See-through is run separately.
 ---
