@@ -127,11 +127,12 @@ part name, `[i]` an entry of a list):
 - **meshes.&lt;part&gt;.auto.regions[i]** — required: `name`, `shape`, `maxEdgeLength`, `transition`, `grade`, `minArtSamples`, and `cx`, `cy`, `r` for a circle or `points` for a polygon; optional: `bone`, `band` (both or neither; with neither the region is density only)
 - **meshes.&lt;part&gt;.auto.boundaryRuns** — required: `maxVertices`
 - **regions.&lt;part&gt;** — a bone name
-- **motion** — required: `duration`, `tracks`; optional: `blink`
+- **motion** — required: `duration`, `tracks`; optional: `blink`, `animations_from`
 - **motion.tracks[i]**, a single track — required: `bone`, `prop`, `amp`, `period`, `phase`; optional: `base`
 - **motion.tracks[i]**, a chain track — required: `chain`, `amps`, `period`, `phase`, `lag`
 - **motion.blink** — required: `t`, `eyes`, `squash`; optional: `brows`, `brow_drop`, `still`
 - **motion.blink.still.&lt;part&gt;** — required: `row`, `bone`
+- **motion.animations_from**, the file it names — required: `spec`, `animations`
 - **proposal.json**, the file propose writes — `bones`, `meshes`, `regions`, `motion` under the rules above, and `notes`
 <!-- /stable:config -->
 

@@ -186,7 +186,10 @@ usage:
       states no motion.blink, and a blink group that names no bone, or one
       bone twice, is refused by the loader, CONFIG_BLINK_GROUP_MEMBERS or
       CONFIG_BLINK_GROUP_UNIQUE, before rigc starts, as are two tracks on one
-      bone property, CONFIG_BONE_PROPERTY_KEYED_ONCE. --parts is the
+      bone property, CONFIG_BONE_PROPERTY_KEYED_ONCE. Beside the idle,
+      every animation of the file config.motion.animations_from names is
+      written into motion.json as read, for rigc's gate to judge (AUTHORING
+      §3). --parts is the
       directory holding parts.json and parts/<name>.png. The result is built
       through rig-c (profile spine-html, packed with --page-edges and
       --pack-shape as for check; rigc's build gates the compile and the packed pages on disk) in a

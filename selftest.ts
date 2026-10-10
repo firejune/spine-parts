@@ -147,7 +147,7 @@ import {
   visibilityCounts,
 } from './src/assemble.ts';
 import { maxRgbDiff, withoutPhysics } from './src/check.ts';
-import { BARS, blackRig, buildGateLines, causeLines, chainLine, measuredRules, SOURCE_LINE, sourceFigures, sourceSizeProblem, packedBuildArgs, DEFAULT_PACK_MODE, DEFAULT_PAGE_EDGES, findRigc, type PackMode, type PageEdges, type FrameSet, GEOMETRY_FILE, gateGreen, headBoneOf, IDLE_MAX_PX, type JudgementLine, JUDGEMENT_LINES, packEdgeProblems, PARTS_HOME_SENTENCE, parsePackLines, readBoneTrack, readCheckInputs, readFrameSet, readGeometry, readRigcEntry, REPORTED_LINES, requireRigcVersion, RIGC_ENTRY_VERSION, RIGC_GEOMETRY_VERSION, rigcFailed, type RigcRunner, runCheck, SPINEBOY_YARDSTICK, stretchLine, TEXTURE_STRETCH_CEILING, TIP_RATIO_FLOOR, attachmentPoses, stillLine, STILL_INSTRUMENT } from './src/check.ts';
+import { BARS, besideIdleLine, blackRig, buildGateLines, causeLines, chainLine, measuredRules, SOURCE_LINE, sourceFigures, sourceSizeProblem, packedBuildArgs, DEFAULT_PACK_MODE, DEFAULT_PAGE_EDGES, findRigc, type PackMode, type PageEdges, type FrameSet, GEOMETRY_FILE, gateGreen, headBoneOf, IDLE_MAX_PX, type JudgementLine, JUDGEMENT_LINES, packEdgeProblems, PARTS_HOME_SENTENCE, parsePackLines, readBoneTrack, readCheckInputs, readFrameSet, readGeometry, readRigcEntry, REPORTED_LINES, requireRigcVersion, RIGC_ENTRY_VERSION, RIGC_GEOMETRY_VERSION, rigcFailed, type RigcRunner, runCheck, SPINEBOY_YARDSTICK, stretchLine, TEXTURE_STRETCH_CEILING, TIP_RATIO_FLOOR, attachmentPoses, stillLine, STILL_INSTRUMENT } from './src/check.ts';
 import { blinkFigures, type BoneWorld, frameBox, halfTravels, lagStep, readSine, setupToFrame, stillReading, stillTolerance, STILL_ROUNDINGS, ulpOf } from './src/instruments.ts';
 import {
   aimLine,
@@ -184,7 +184,7 @@ import { COMPOSED_HAND_X, COMPOSED_SHOULDER, writeComposedRig, DRIVER_AT, DRIVER
 import { buildHeaderProblem } from './tools/atlas_population.ts';
 import { ALIAS, AliasTarballError, compareTarballs, MANIFEST as ALIAS_MANIFEST, packAlias, packInto, renamed } from './scripts/alias_tarball.ts';
 import { BLINK, blinkHoldMisses, CONTROL_SUFFIX, framesInside, IDLE_FPS, type MotionKey, type MotionSpec, sineTrack } from './src/motion.ts';
-import { type BoneEntry, type CharacterConfig, CONFIG_REQUIRES, type ContourRegionSpec, type Patch, type Point, type ConfigDoor, CONSTRAINT_BONE_FIELDS, type Generation, isDoorKey, loadConfig, loadEarlyConfig, parseConfig, parseEarlyConfig, type SkeletonSections } from './src/config.ts';
+import { type BoneEntry, type CharacterConfig, CONFIG_REQUIRES, type ContourRegionSpec, type Patch, type Point, type ConfigDoor, CONSTRAINT_BONE_FIELDS, type Generation, isDoorKey, loadConfig, loadConfigAndAnimations, loadEarlyConfig, parseConfig, parseEarlyConfig, type SkeletonSections } from './src/config.ts';
 import { RIG_KEYS, RIG_SKIN_CONSTRAINT_KEYS } from 'rig-c/src/rig.ts';
 import { type BoneTransform, computeExactFrameTransforms, cropToSpineY, toWorld } from './src/coords.ts';
 import { artMask, contourFit, type ContourMesh, contourMesh, contourOutline, type ContourParams, type ContourRegion, contourTopologyProblems, delaunayViolations, GRID, growSilhouette, inCircle, keepPoints, MAX_SIDE, marginDisc, outlineInRegions, withinMarginSquared } from './src/contour.ts';
@@ -331,7 +331,7 @@ import { checkImageSize, choosePerson, KEYPOINTS_SPACE, KEYPOINTS_SPEC, loadKeyp
 import { LYING_PARTS, LYING_RIG, type PoseName, POSES } from './fixtures/poses.ts';
 import { buildSheet, tileImage, tilesFrom } from './src/sheet.ts';
 import { block, constraintConfig, HEAT_STRIP_EXPECT, heatStripConfig, islandImages, LASH_CREASE, LASH_RIG, LASH_ROW, lashConfig, lashImages, lashParts, RIG_CANVAS, RIG_EXPECT, rigConfig, rigImages, rigParts, SCENE_TARGET, TURNED_EXPECT, turnedConfig, writeRigFixture } from './fixtures/rig.ts';
-import { blinkHoldProblems, buildRig, flattenRig, IDLE_DRIVES_MESHES_WHY, type MeshAttachment, PAD, type RegionAttachment, rigJsonText, type RigOutput, type RigSpec, roundShares, writtenShares } from './src/rig.ts';
+import { blinkHoldProblems, buildRig, DEFAULT_IDLE_KEYS, flattenRig, IDLE_DRIVES_MESHES_WHY, type MeshAttachment, PAD, type RegionAttachment, rigJsonText, type RigOutput, type RigSpec, roundShares, writtenShares } from './src/rig.ts';
 import { type ComposedScene, composeFromFiles, IMAGE_SEP, PLATE, PLATE_IMAGE, PREFIX_SEP, SCENE_REPORT_FILE, SCENE_SPEC, unprefixedNames } from './src/scene.ts';
 import { sceneCharacterRig, sceneText, writeFlatPlate, writeSceneBuild } from './fixtures/scene.ts';
 import { localInfluences, regionWeight } from './src/localweights.ts';
@@ -1377,6 +1377,63 @@ function runConfigSuite(): number {
     `exponent 4 with rule "distance" -> ${withDistance === null ? 'loads' : codes(withDistance)}; exponent 4 with rule "heat" -> ${withHeat === null ? 'loads' : withHeat.problems.map((q) => `${q.code} ${q.object}: ${q.detail}`).join('; ')}`,
     'issue #161: bone heat reads no exponent, so one declared beside it would be a number nothing reads while its author believes it sharpens the weights',
   );
+
+  // CF72 — issue #183: motion.animations_from is read relative to the config's directory, and every refusal of its file comes at once.
+  const af = temp('animations-from');
+  try {
+    mkdirSync(join(af, 'anims'));
+    const nod = { duration: 1, tracks: [{ bone: 'body', property: 'rotate', keys: [{ t: 0, v: [0] }, { t: 1, v: [5] }] }] };
+    writeFileSync(join(af, 'anims', 'good.json'), JSON.stringify({ spec: 'rigc-motion/1', note: 'two expressions', animations: { nod, wink: { duration: 0.5, tracks: [] } } }));
+    // Five faults in one file, each counted by hand: "nod" twice in animations, an easings table, spec 2, an idle, and "wave" a list.
+    writeFileSync(join(af, 'anims', 'bad.json'), '{"spec": "rigc-motion/2", "easings": {}, "animations": {"idle": {"duration": 1, "tracks": []}, "nod": {}, "nod": {"duration": 1}, "wave": []}}');
+    writeFileSync(join(af, 'anims', 'list.json'), '[]');
+    writeFileSync(join(af, 'anims', 'broken.json'), '{"spec": ');
+    const withFile = (name: string, edit: (c: Record<string, unknown>) => void = () => {}): string => {
+      const c = minimalConfig();
+      (c.motion as Record<string, unknown>).animations_from = name;
+      edit(c);
+      const at = join(af, `config-${name.replace(/[^a-z]/g, '')}.json`);
+      writeFileSync(at, JSON.stringify(c));
+      return at;
+    };
+    const goodAf = loadConfigAndAnimations(withFile('anims/good.json'));
+    const goodOk = goodAf.animations !== null && goodAf.animations.file === join(af, 'anims', 'good.json') && Object.keys(goodAf.animations.table).join() === 'nod,wink' && JSON.stringify(goodAf.animations.table.nod) === JSON.stringify(nod);
+    const badAf = refusals(() => loadConfig(withFile('anims/bad.json', (c) => ((c.motion as Record<string, unknown>).duration = 0))));
+    const at = `config.motion.animations_from (${join(af, 'anims', 'bad.json')})`;
+    const want = [
+      ['CONFIG_FIELD_TYPE', 'config.motion.duration'],
+      ['CONFIG_KEY_UNIQUE', `${at}.animations`],
+      ['CONFIG_KEY_KNOWN', `${at}.easings`],
+      ['CONFIG_FIELD_TYPE', `${at}.spec`],
+      ['CONFIG_ANIMATION_NAME_FREE', `${at}.animations.idle`],
+      ['CONFIG_FIELD_TYPE', `${at}.animations.wave`],
+    ];
+    const got = badAf === null ? [] : badAf.problems.map((q) => [q.code, q.object]);
+    const badOk = got.length === want.length && want.every(([code, object]) => got.some(([c2, o2]) => c2 === code && o2 === object)) && (badAf?.problems.find((q) => q.code === 'CONFIG_KEY_UNIQUE')?.detail.startsWith('names "nod" twice') ?? false);
+    const one = (name: string): string => {
+      const e = refusals(() => loadConfig(withFile(name)));
+      return e === null ? 'loads' : e.problems.map((q) => `${q.code} ${q.object.startsWith('config.motion.animations_from') ? q.object.replace(af, '<dir>') : q.object}`).join('; ');
+    };
+    const list = one('anims/list.json');
+    const broken = one('anims/broken.json');
+    const missing = one('anims/missing.json');
+    const empty = one('');
+    // Without a path to resolve against, the field is a string and nothing is read: parseConfig loads it.
+    const unread = refusals(() => parseConfig({ ...minimalConfig(), motion: { ...(minimalConfig().motion as Record<string, unknown>), animations_from: 'anims/missing.json' } }));
+    say(
+      'CF72_ANIMATIONS_FROM_READS_THE_FILE_BESIDE_THE_CONFIG_AND_NAMES_EVERY_FAULT_OF_IT_AT_ONCE',
+      goodOk && badOk &&
+        list === 'CONFIG_FIELD_TYPE config.motion.animations_from (<dir>/anims/list.json)' &&
+        broken === 'CONFIG_IS_JSON config.motion.animations_from (<dir>/anims/broken.json)' &&
+        missing === 'CONFIG_FILE_PRESENT config.motion.animations_from' &&
+        empty === 'CONFIG_FIELD_TYPE config.motion.animations_from' &&
+        unread === null,
+      `anims/good.json -> ${goodAf.animations === null ? 'nothing read' : `${goodAf.animations.file.replace(af, '<dir>')}: ${Object.keys(goodAf.animations.table).join(', ')}; nod ${JSON.stringify(goodAf.animations.table.nod) === JSON.stringify(nod) ? 'as written' : 'CHANGED'}`}; anims/bad.json with motion.duration 0 -> ${badAf === null ? 'loads' : badAf.problems.map((q) => `${q.code} ${q.object.replace(af, '<dir>')}`).join('; ')} (by hand ${want.length}); [] -> ${list}; '{"spec": ' -> ${broken}; no such file -> ${missing}; "" -> ${empty}; parseConfig, no path -> ${unread === null ? 'loads, nothing read' : codes(unread)}`,
+      'issue #183: the file is read where the config is read from a path, against its directory and not the working directory, so a config moves with its animations; a problem in it is named with the config\'s own problems in one refusal, and a key JSON would fold into its last value is read off the text',
+    );
+  } finally {
+    rmSync(af, { recursive: true, force: true });
+  }
   return bad();
 }
 
@@ -3181,7 +3238,99 @@ function runRigSuite(): number {
   runConstraintRigCases(say);
   runExponentCases(say);
   runHeatRuleCases(say);
+  runAnimationsFromCases(say);
   return bad();
+}
+
+/**
+ * Issue #183: `config.motion.animations_from` names a file of rig-c motion-spec
+ * animations, written into `motion.json` beside the idle as read. The fixture
+ * rig's `body` is a declared bone the idle does not key, so an animation
+ * turning it is one rigc can build; `tail` is a bone no config declares.
+ */
+function runAnimationsFromCases(say: (name: string, ok: boolean, detail: string, why: string) => void): void {
+  const dir = temp('animations-from');
+  try {
+    const nod = { duration: 1, tracks: [{ bone: 'body', property: 'rotate', keys: [{ t: 0, v: [0], ease: 'shut' }, { t: 0.5, v: [6] }, { t: 1, v: [0] }] }] };
+    const fixture = (name: string, animations: Record<string, unknown> | null): { config: string; parts: string; out: string } => {
+      const c = rigConfig();
+      if (animations !== null) (c.motion as Record<string, unknown>).animations_from = 'anims/extra.json';
+      const f = writeRigFixture(join(dir, name), c);
+      if (animations !== null) {
+        mkdirSync(join(dir, name, 'anims'), { recursive: true });
+        writeFileSync(join(dir, name, 'anims', 'extra.json'), `${JSON.stringify({ spec: 'rigc-motion/1', animations }, null, 2)}\n`);
+      }
+      return { ...f, out: join(dir, name, 'out') };
+    };
+    const read = (path: string): string => (existsSync(path) ? readFileSync(path, 'utf8') : 'absent');
+
+    // RG72 — absent writes the idle's motion byte for byte; present changes motion.json alone, and only by the animations after the idle.
+    const green: RigcRunner = () => ({ status: 0, out: '' });
+    const scratch = join(dir, 'scratch');
+    const absent = fixture('absent', null);
+    const present = fixture('present', { nod, wink: { duration: 0.5, tracks: [] } });
+    rigStage({ config: absent.config, parts: absent.parts, out: absent.out }, green, scratch, () => {});
+    rigStage({ config: present.config, parts: present.parts, out: present.out }, green, scratch, () => {});
+    const idleOnly = rigJsonText(buildRig(rigCfg(), rigParts(), rigImages(), undefined, DEFAULT_IDLE_KEYS).motion);
+    const absentSame = read(join(absent.out, 'motion.json')) === idleOnly;
+    const othersSame = ['rig.json', 'mesh_report.json'].every((f) => read(join(absent.out, f)) === read(join(present.out, f)));
+    const written = JSON.parse(read(join(present.out, 'motion.json'))) as { animations: Record<string, unknown> } & Record<string, unknown>;
+    const idleParsed = JSON.parse(idleOnly) as { animations: Record<string, unknown> } & Record<string, unknown>;
+    const { animations: wa, ...wrest } = written;
+    const { animations: ia, ...irest } = idleParsed;
+    const merged = Object.keys(wa).join() === 'idle,nod,wink' && JSON.stringify(wa.idle) === JSON.stringify(ia.idle) && JSON.stringify(wa.nod) === JSON.stringify(nod) && JSON.stringify(wrest) === JSON.stringify(irest);
+    const presentDiffers = read(join(present.out, 'motion.json')) !== idleOnly;
+    say(
+      'RG72_NO_ANIMATIONS_FROM_WRITES_THE_IDLE_BYTE_FOR_BYTE_AND_A_FILE_ADDS_ITS_ANIMATIONS_AFTER_IT_AS_WRITTEN',
+      absentSame && othersSame && merged && presentDiffers,
+      `absent: motion.json ${absentSame ? 'byte-identical to' : 'DIFFERS from'} buildRig's own idle motion; present (nod, wink): rig.json and mesh_report.json ${othersSame ? 'byte-identical to absent' : 'DIFFER'}, motion.json ${presentDiffers ? 'differs' : 'IDENTICAL, so the merge wrote nothing'}, animations ${Object.keys(wa).join(', ')}, idle ${JSON.stringify(wa.idle) === JSON.stringify(ia.idle) ? 'unchanged' : 'CHANGED'}, nod ${JSON.stringify(wa.nod) === JSON.stringify(nod) ? 'as written' : 'CHANGED'}, every other key ${JSON.stringify(wrest) === JSON.stringify(irest) ? 'unchanged' : 'CHANGED'}`,
+      'issue #183: a config that names no file writes what it wrote before the field existed, so no build changes; a file adds its animations after the idle and touches nothing else — the gate, not this package, judges them',
+    );
+
+    // RG73 — through rigc: the merged animation builds green; one keying a bone the rig lacks is rigc's refusal, and nothing is written.
+    const gated = fixture('gated', { nod });
+    const ok = runCli(['rig', '--config', gated.config, '--parts', gated.parts, '--out', gated.out]);
+    const okAnims = Object.keys((JSON.parse(read(join(gated.out, 'motion.json')) === 'absent' ? '{"animations":{}}' : read(join(gated.out, 'motion.json'))) as { animations: Record<string, unknown> }).animations).join();
+    const beside = ok.out.split('\n').find((l) => l.includes('animations beside the idle')) ?? 'no line';
+    const stray = fixture('stray', { nod: { ...nod, tracks: [{ ...nod.tracks[0], bone: 'tail' }] } });
+    const red = runCli(['rig', '--config', stray.config, '--parts', stray.parts, '--out', stray.out]);
+    const redLine = red.out.split('\n').find((l) => l.includes('RIG_RIGC_GREEN')) ?? 'no RIG_RIGC_GREEN line';
+    say(
+      'RG73_A_MERGED_ANIMATION_GATES_GREEN_THROUGH_RIGC_AND_ONE_ON_A_BONE_THE_RIG_LACKS_IS_RIGCS_REFUSAL',
+      ok.status === 0 && okAnims === 'idle,nod' && beside.trim().endsWith(': nod') &&
+        red.status !== 0 && redLine.includes('"tail"') && !existsSync(join(stray.out, 'motion.json')),
+      `nod on body -> rig exit ${ok.status}, motion.json animations ${okAnims || 'none'}; "${beside.trim().replace(dir, '<dir>')}"; planted, nod on "tail" -> exit ${red.status}, ${redLine.trim().slice(0, 240)}…; motion.json written: ${existsSync(join(stray.out, 'motion.json'))}`,
+      'issue #183: the merge is not a bypass — the animations go through the one gate the idle goes through, so a key on a bone the rig does not have is refused in rigc\'s words and emit-only-after-green holds',
+    );
+
+    // RG74 — check measures the idle alone and names the others on one line; a rig of the idle alone prints no such line.
+    const chk = runCli(['check', '--rig', gated.out, '--parts', gated.parts, '--out', join(dir, 'gated', 'check')]);
+    const lines = chk.out.split('\n');
+    const besideLines = lines.filter((l) => l.trim().startsWith('beside the idle:'));
+    const loopLine = lines.find((l) => l.trim().startsWith('loop:'))?.trim() ?? 'no loop line';
+    const none = besideIdleLine([]);
+    // rigc's own count of the skeleton it built from the packed pages: the idle and nod.
+    const built = lines.filter((l) => l.includes(' animations=2 '));
+    say(
+      'RG74_CHECK_READS_THE_IDLE_ALONE_AND_NAMES_THE_ANIMATIONS_BESIDE_IT_ON_ONE_LINE',
+      besideLines.length === 1 && besideLines[0].includes('1 animation(s), nod') && loopLine.startsWith('loop: idle ') && built.length > 0 && none === null,
+      `check on the rig with nod -> exit ${chk.status}; ${besideLines.length} beside line(s): "${besideLines[0]?.trim() ?? ''}"; ${loopLine}; rigc's gate lines naming animations=2: ${built.length}; planted, no animation beside the idle -> ${none === null ? 'no line' : `"${none}"`}`,
+      'issue #183: every bar reads the idle (the loop, the seam, the frames rigc renders with --animation idle); the others were built and gated, which the gate line says, and the line says they were not measured rather than leaving a reader to infer it',
+    );
+
+    // RG75 — a file the loader refuses stops the rig stage before rigc runs, and nothing is written.
+    const idled = fixture('idled', { idle: { duration: 1, tracks: [] } });
+    const refused = runCli(['rig', '--config', idled.config, '--parts', idled.parts, '--out', idled.out]);
+    const fail = refused.out.split('\n').filter((l) => l.includes('FAIL'));
+    say(
+      'RG75_A_FILE_THE_LOADER_REFUSES_STOPS_RIG_BEFORE_RIGC_AND_WRITES_NOTHING',
+      refused.status !== 0 && fail.length === 1 && fail[0].includes('CONFIG_ANIMATION_NAME_FREE') && !refused.out.includes('rigc build') && !existsSync(idled.out),
+      `an animation named idle -> exit ${refused.status}, ${fail.length} FAIL line(s): ${fail[0]?.trim().replace(dir, '<dir>').slice(0, 200) ?? 'none'}; rigc ran: ${refused.out.includes('rigc build')}; --out exists: ${existsSync(idled.out)}`,
+      'issue #183: the idle is the config\'s, so a second one would replace it or be replaced without a word; the loader refuses it before anything runs',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /**
