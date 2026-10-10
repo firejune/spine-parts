@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0](https://github.com/firejune/rig-parts/compare/v1.1.1...v1.2.0) (2026-10-10)
+
+
+### Features
+
+* **motion:** write the animations of a named rig-c motion file beside the idle on every build ([#186](https://github.com/firejune/rig-parts/issues/186)) ([12cf5ff](https://github.com/firejune/rig-parts/commit/12cf5ffe376f29280e0a0bdc8a6bf521aff42536))
+
+
+### Bug Fixes
+
+* **check:** measure the keyed loop with physics constraints left out, and report them on a line of their own ([#184](https://github.com/firejune/rig-parts/issues/184)) ([8aebe6e](https://github.com/firejune/rig-parts/commit/8aebe6e2fc50bb1fd4fee4b9dd0f99b3f5e22671))
+
 ## [1.1.1](https://github.com/firejune/rig-parts/compare/v1.1.0...v1.1.1) (2026-10-10)
 
 
