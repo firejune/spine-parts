@@ -306,8 +306,10 @@ These are limits of the approach, stated so nobody reads more into a green run:
   layer that is in front of another in one place and behind it in another is drawn
   right in the still (the painting's own pixels are projected onto it) and wrong once
   it moves.
-- **No expression or lip-sync.** The mouth is one layer; there is no mouth-shape set
-  and no expression axis.
+- **No expression or lip-sync, and no jiggle.** The mouth is one layer; there is no
+  mouth-shape set and no expression axis, and nothing here proposes, keys or judges a
+  soft region. An expression that moves the face's parts, and a jiggle, can be built on
+  the rig it writes ([below](#what-can-be-built-on-top)); lip-sync cannot.
 - **Occluded pixels are See-through's synthesis**, not the artist's. How much of a rig
   that is, is below.
 - **No success rate is claimed.** Ten characters have been measured stage by stage
@@ -330,6 +332,23 @@ These are limits of the approach, stated so nobody reads more into a green run:
   whether an accessory swings are the corrector's to add. The one accessory shape it
   measures is a hanging strand on a headwear or earwear layer: each gets a pendulum
   chain, and a strand it cannot chain is named in a note rather than left stiff.
+
+### What can be built on top
+
+This package makes no expression and no jiggle, but the rig it writes is the material for
+both, and the config has a field for each. [docs/AUTHORING.md](docs/AUTHORING.md) has a recipe
+for each — a config fragment, the `check` lines it passes with, and its limit:
+
+- [**Expressions and other named animations**](docs/AUTHORING.md#recipe-expressions-and-other-named-animations):
+  the face's parts are bones; animations written over them in rig-c's motion-spec shape and
+  named by `motion.animations_from` are built and gated beside the idle on every build. One
+  attachment per slot, so a part moves, turns and scales but is never swapped for another
+  image; `check` measures the idle alone.
+- [**A soft region driven by physics**](docs/AUTHORING.md#recipe-a-soft-region-driven-by-physics)
+  (a bust, the hips): a bone the config authors, a contour-mode region that hands it the patch,
+  and a `physics` constraint on it; `examples/sample` carries one. Under the sample's slow
+  4 s idle the bust moves at most 0.155 rig px and the hips not at all (PR #187): the spring
+  answers faster keys on the body, which are a consumer's to write.
 
 ### How much of a rig the model painted
 

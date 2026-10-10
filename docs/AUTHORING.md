@@ -844,6 +844,101 @@ boundary stays held, and an edge from the region to a vertex further out than it
 that crosses the region with no point of it inside to split at — is still stopped by name
 (`AUTO_MESH_ACCEPTED`, the detail naming P16).
 
+### Recipe: expressions and other named animations
+
+The package proposes no expression and keys nothing but the idle; what it gives is a rig whose
+face is bones (`eye_r`, `eye_l`, `brow_r`, `brow_l`, `mouth` on `sample`) and one door for
+animations you write over them, `motion.animations_from` (the row above, issue #183). Write a
+file in rig-c's motion-spec shape beside the config and name it:
+
+```jsonc
+// config.json
+"motion": { "duration": 4.0, "tracks": [ … ], "blink": { … },
+            "animations_from": "expressions.json" }
+
+// expressions.json — the bones the config declares, keyed as rig-c keys them
+{ "spec": "rigc-motion/1",
+  "animations": {
+    "surprised": { "duration": 0.5, "tracks": [
+      { "bone": "brow_r", "property": "translatey", "keys": [ { "t": 0, "v": [0] }, { "t": 0.25, "v": [2] }, { "t": 0.5, "v": [0] } ] },
+      { "bone": "brow_l", "property": "translatey", "keys": [ { "t": 0, "v": [0] }, { "t": 0.25, "v": [2] }, { "t": 0.5, "v": [0] } ] },
+      { "bone": "mouth",  "property": "scaley",     "keys": [ { "t": 0, "v": [1] }, { "t": 0.25, "v": [1.4] }, { "t": 0.5, "v": [1] } ] } ] } } }
+```
+
+`build` writes `surprised` into `rig/motion.json` after `idle`, gates it with the rig, and
+`check` names it on a line of its own. With exactly this file beside `examples/sample`'s config,
+`build` printed (this tree, rig-c as `package.json` pins it):
+
+```
+[rig]   animations beside the idle, from …/expressions.json as written: surprised
+[check]   beside the idle: 1 animation(s), surprised — built and gated by rigc with the rig, not measured: every bar here reads the idle
+[check] check: PASS; 9 of 9 bar(s) measured, 0 skipped
+```
+
+A bone the rig lacks is rigc's refusal at the rig stage, in rigc's words (`RIG_RIGC_GREEN`); a
+fault in the file itself is the loader's (the row above names each one).
+
+**Limits.** Every slot holds one attachment, the part's own image, so an expression moves,
+turns and scales the face's parts and never swaps one for another: there is no second mouth
+shape to key, and no lip-sync. `check` measures the idle alone: an animation beside it has
+passed rigc's gate and nothing else — no seam, stretch or hole bar has read it.
+
+### Recipe: a soft region driven by physics
+
+A jiggle (a bust, the hips) is a patch of one part that lags behind the body. The package
+proposes none and judges none; what it gives is the three pieces to build one, all in the
+config. `examples/sample` carries a worked one (issue #183, PR #187), and its config is the
+fragment below, cut to the bust:
+
+```jsonc
+"bones": [ …,
+  { "name": "chest_jiggle", "parent": "chest", "at": [419, 320] }, … ],
+"meshes": { "topwear": {
+  "contour": { "tolerance": 1, "margin": 1, "spacing": 18, "stray": 4,
+    "regions": [ { "name": "bust", "shape": "circle", "cx": 419, "cy": 320, "r": 28,
+                   "bone": "chest_jiggle", "spacing": 6, "band": 16 } ] },
+  "r": 8, "segments": [ ["chest", [419, 223], [419, 437]], ["hip", [419, 437], [419, 557]] ] } },
+"constraints": [
+  { "type": "physics", "name": "bust_phys", "bone": "chest_jiggle",
+    "x": 0.5, "y": 1, "inertia": 0.5, "strength": 100, "damping": 0.85, "mass": 1, "mix": 1 } ]
+```
+
+- **A bone the config authors**, under the bone the patch rides on. `propose` writes no such
+  bone and no constraint; it is yours, and nothing keys it — the constraint moves it.
+- **A region in a `contour` (or `auto`) mesh** that hands the patch to that bone: weight 1
+  inside the shape, falling to 0 across `band` (*A contour mesh*, above). A `grid` mesh carries
+  no region, so the part moves from the lattice to the outline mode first; `sample` traced
+  `topwear` at its former grid spacing (18) and `bottomwear` at 28. Place the shape on the
+  patch alone: on `sample` one circle at the hip centre reached the clasped hands, painted
+  inside `bottomwear`, so the hips are two side circles (`hip_r`, `hip_l`) on one bone.
+- **A `physics` constraint** on that bone in `constraints`, in rig-c's shape; every field but
+  the bone is rigc's to accept.
+
+`build` on `sample` as tracked (PR #187):
+
+```
+check: PASS; 9 of 9 bar(s) measured, 0 skipped
+loop physics: 2 physics constraint(s) left out of the loop's frames, reported, not judged — "bust_phys" on bone "chest_jiggle" (rig.json), "hip_phys" on bone "hip_jiggle" (rig.json)
+loop: idle 49 frame(s) at 12 fps, f0000 vs f0048 (t = 4s): max |d| 0 (0 required)
+```
+
+The `loop physics:` line is the loop bar saying what it did not read (§7, *loop*): rig-c's
+render resets physics at frame 0 and steps it, so the idle's last frame differs from its first
+by whatever the spring is still doing; the bar is read off the same rig with every physics
+constraint left out, and the constraints left out are listed, reported and not judged
+(`check.json`'s `loop_physics`, PR #184). It is not a measure of the jiggle.
+
+**Limits.** The idle drives the spring, and a slow idle barely moves it. Measured on `sample`
+(PR #187, rig-c `render --geometry`, the physics build against the same build with
+`constraints` removed): under its 4 s breath (`chest` `translatey` amplitude 1.3 px), the bust
+moves at most 0.155 rig px (idle frame 3, t 0.25 s); the hips move 0.000 at all 49 frames,
+because the idle keys `chest` and never `hip`, so a child of `hip` receives no motion. A spring
+of strength 100 trails a parent moving at about 2 px/s by the order of speed over its angular
+frequency, about 0.2 px (PR #187, from the definition): no setting makes a 4 s breath read as a
+jiggle. Faster keys on the parent bone — a hop, a turn, in a named animation (the recipe above)
+or a consumer's own — are what the spring answers; no figure for one is measured in this
+repository, and no bar here judges the jiggle.
+
 ## 4. The command order
 
 Two steps are external: the See-through runs (by any route; the optional `comfy seethrough` adapter is only a client for a ComfyUI box). Everything else is this tool.
