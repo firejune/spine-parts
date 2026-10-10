@@ -347,8 +347,10 @@ for each — a config fragment, the `check` lines it passes with, and its limit:
 - [**A soft region driven by physics**](docs/AUTHORING.md#recipe-a-soft-region-driven-by-physics)
   (a bust, the hips): a bone the config authors, a contour-mode region that hands it the patch,
   and a `physics` constraint on it; `examples/sample` carries one. Under the sample's slow
-  4 s idle the bust moves at most 0.155 rig px and the hips not at all (PR #187): the spring
-  answers faster keys on the body, which are a consumer's to write.
+  4 s idle the bust moves at most 0.066 rig px and the hips not at all: the spring answers
+  faster keys on the body. The sample's `hop`, a named animation keying only `hip`, moves the
+  bust up to 6.583 and the hips up to 4.432 rig px; the region's `band` caps how far a patch may
+  go before the texture-stretch ceiling, and `check` measures the idle alone.
 
 ### How much of a rig the model painted
 

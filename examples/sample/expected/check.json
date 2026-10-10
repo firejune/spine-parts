@@ -29,7 +29,7 @@
   "torso_parts": [
    "topwear"
   ],
-  "torso_heat_mean": 7.8,
+  "torso_heat_mean": 7.705,
   "torso_floor": 3.809,
   "feet_parts": [
    "shoes"
@@ -237,8 +237,8 @@
     "triangles": 568,
     "max_ratio": 1.048,
     "max_at": "triangle 561 (vertices 310 316 311), edge 310-316, idle frame 12",
-    "min_ratio": 0.979,
-    "min_at": "triangle 342 (vertices 138 156 139), edge 156-139, idle frame 15",
+    "min_ratio": 0.98,
+    "min_at": "triangle 342 (vertices 138 156 139), edge 156-139, idle frame 13",
     "severity": 1.048
    },
    {

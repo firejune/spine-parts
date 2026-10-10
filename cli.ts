@@ -439,7 +439,9 @@ usage:
       shared, so a character whose idle keys it, or whose constraint names it,
       is refused. The plate is a region on bone "${PLATE}" under
       root, drawn first, its image at canvas (0, 0). One idle holds every
-      character's tracks. Refused by name, every problem at once: an id
+      character's tracks; an animation beside a character's idle (its
+      config's motion.animations_from) rides along as "<id>:<name>",
+      prefixed as the idle is and scheduled by nothing. Refused by name, every problem at once: an id
       repeated, empty or holding ":" (or "/", "\\", a leading "."); a build
       missing a file or whose own check is not green; characters built at
       different rig_scale; a character whose parts' boxes, placed, leave the
