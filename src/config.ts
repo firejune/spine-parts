@@ -154,12 +154,40 @@ export interface Patch {
   draw: PatchDraw;
 }
 
+/**
+ * A declared cut of a plan part (issue #170): the pixels of `from`'s layer
+ * whose centre lies inside `polygon` leave `from` and make the part `into`,
+ * a part like any other — its own `parts.json` record and PNG, a `meshes` or
+ * `regions` entry, its own place in the draw order. `polygon` is `[[x, y],
+ * …]`, at least three points, in non-negative integer RIG pixels (the space
+ * of `parts.json` and the patches' boxes), even-odd, a pixel inside when its
+ * centre `(x + 0.5, y + 0.5)` is. `draw` places `into` exactly as a patch's
+ * `draw` places a patch. What the config alone cannot know — whether the
+ * polygon lies inside the rig, takes any of the layer's art, or overlaps
+ * another cut of the same part — the assemble stage refuses
+ * (`ASSEMBLE_CUT_INSIDE`, `ASSEMBLE_CUT_PIXELS`, `ASSEMBLE_CUT_OVERLAP`).
+ */
+export interface Cut {
+  from: string;
+  into: string;
+  polygon: Array<[number, number]>;
+  draw: PatchDraw;
+  /**
+   * The band, in rig px, inside the cut's edge that the from part keeps as
+   * well as the piece (`cutBand` in `src/assemble.ts`), so the piece's
+   * resampled edge has art under it. Required, 0 allowed: 0 makes the two
+   * abut, which `check`'s seam bar reads.
+   */
+  overlap: number;
+}
+
 export interface Assemble {
   /** Rig pixels per source pixel. */
   rig_scale: number;
   plan: PlanEntry[];
   extend_below_crop?: Extend[];
   patches?: Patch[];
+  cuts?: Cut[];
 }
 
 export interface SingleBone {
@@ -835,7 +863,7 @@ const TOP_KEYS = ['key', 'generation', 'seethrough', 'assemble', 'bones', 'meshe
  * with the full loader's own rules for each — plus `generation` whenever it is
  * present. The sections a later step writes may be present and are NOT read or
  * vouched for (for `paint` that is everything but `key` and `generation`; for
- * `layers`, `assemble.plan`, `extend_below_crop`, `patches`, `bones`, `meshes`,
+ * `layers`, `assemble.plan`, `extend_below_crop`, `patches`, `cuts`, `bones`, `meshes`,
  * `regions` and `motion`; for `assemble`, the last four); a caller that needs
  * them uses {@link parseConfig}. Every other key that is not a record or an
  * annotation is still refused by name, and a retired one
@@ -866,7 +894,7 @@ export function parseEarlyConfig(raw: Json, door: EarlyDoor): PaintConfig | Earl
   if (door === 'layers') {
     if ('seethrough' in t) checkSeeThrough(c, t.seethrough);
     if ('assemble' in t) {
-      const a = c.object('config.assemble', t.assemble, sectionRequired(door, 'assemble'), ['plan', 'extend_below_crop', 'patches']);
+      const a = c.object('config.assemble', t.assemble, sectionRequired(door, 'assemble'), ['plan', 'extend_below_crop', 'patches', 'cuts']);
       if (a !== null && 'rig_scale' in a) c.number('config.assemble.rig_scale', a.rig_scale, 'positive');
     }
   }
@@ -906,11 +934,11 @@ function parseConfigFrom(raw: Json, base: string | null): { config: CharacterCon
   if ('key' in t) c.string('config.key', t.key);
   if ('generation' in t) checkGeneration(c, t.generation);
   if ('seethrough' in t) checkSeeThrough(c, t.seethrough);
-  const { parts, patches } = 'assemble' in t ? checkAssemble(c, t.assemble, 'full') : { parts: [], patches: [] };
+  const { parts, patches, cuts } = 'assemble' in t ? checkAssemble(c, t.assemble, 'full') : { parts: [], patches: [], cuts: [] };
   const names = 'bones' in t ? checkBones(c, t.bones) : { bones: new Set<string>([ROOT_BONE]), chains: new Map<string, number>(), parents: new Map<string, string>() };
   if ('meshes' in t) checkMeshes(c, t.meshes, names.bones, names.chains);
   if ('regions' in t) checkRegions(c, t.regions, names.bones);
-  if ('meshes' in t && 'regions' in t && 'assemble' in t) checkCoverage(c, parts, patches, t.meshes, t.regions);
+  if ('meshes' in t && 'regions' in t && 'assemble' in t) checkCoverage(c, [...parts, ...cuts], patches, t.meshes, t.regions);
   if ('motion' in t) checkMotion(c, t.motion, names.bones, names.chains, 'regions' in t ? t.regions : undefined);
   if ('constraints' in t) checkConstraints(c, t.constraints, names.bones, names.parents);
   const from = isPlainObject(t.motion) ? t.motion.animations_from : undefined;
@@ -1208,15 +1236,15 @@ function checkRunTag(c: Check, path: string, run: Json, tag: Json): void {
 }
 
 /**
- * Returns the plan's part names, in plan order, and the patches' names, in
- * patch order. `plan` is left out of the generic presence check so that its
- * absence says which command writes one — the step a config without a plan
- * has most likely skipped.
+ * Returns the plan's part names, in plan order, the patches' names, in patch
+ * order, and the names the cuts make (`into`), in cut order. `plan` is left
+ * out of the generic presence check so that its absence says which command
+ * writes one — the step a config without a plan has most likely skipped.
  */
-function checkAssemble(c: Check, v: Json, door: 'assemble' | 'full'): { parts: string[]; patches: string[] } {
+function checkAssemble(c: Check, v: Json, door: 'assemble' | 'full'): { parts: string[]; patches: string[]; cuts: string[] } {
   const required = sectionRequired(door, 'assemble');
-  const a = c.object('config.assemble', v, required.filter((k) => k !== 'plan'), ['plan', 'extend_below_crop', 'patches']);
-  if (a === null) return { parts: [], patches: [] };
+  const a = c.object('config.assemble', v, required.filter((k) => k !== 'plan'), ['plan', 'extend_below_crop', 'patches', 'cuts']);
+  if (a === null) return { parts: [], patches: [], cuts: [] };
   if (required.includes('plan') && !('plan' in a)) {
     c.fail('CONFIG_FIELD_PRESENT', 'config.assemble.plan', 'is absent and required; `assemble --propose-plan` prints one from the two runs — paste its plan and extend_below_crop into config.assemble');
   }
@@ -1255,7 +1283,62 @@ function checkAssemble(c: Check, v: Json, door: 'assemble' | 'full'): { parts: s
     });
   }
   const patches = 'patches' in a ? checkPatches(c, a.patches, parts) : [];
-  return { parts, patches };
+  const cuts = 'cuts' in a ? checkCuts(c, a.cuts, parts, patches) : [];
+  return { parts, patches, cuts };
+}
+
+/**
+ * `assemble.cuts` (issue #170): each entry `{from, into, polygon, draw, overlap}`,
+ * refused field by field. `from` must be a plan part — a cut of a patch or of
+ * another cut's piece is refused, so every piece's provenance is one layer and
+ * one polygon. `into` is a new part name: not a plan part, not a patch, not
+ * another cut's. Returns the names the cuts make, in order.
+ */
+function checkCuts(c: Check, v: Json, plan: string[], patches: string[]): string[] {
+  const p = 'config.assemble.cuts';
+  const names: string[] = [];
+  if (!c.array(p, v, false)) return names;
+  const seen = new Map<string, number>();
+  (v as Json[]).forEach((entry, i) => {
+    const at = `${p}[${i}]`;
+    const e = c.object(at, entry, ['from', 'into', 'polygon', 'draw', 'overlap'], []);
+    if (e === null) return;
+    if ('overlap' in e && !(typeof e.overlap === 'number' && Number.isInteger(e.overlap) && e.overlap >= 0)) {
+      c.fail('CONFIG_FIELD_TYPE', `${at}.overlap`, `is ${show(e.overlap)}; a non-negative integer of rig pixels is required — the band inside the cut's edge the part keeps under the piece, 0 for none`);
+    }
+    if ('from' in e && (typeof e.from !== 'string' || !plan.includes(e.from))) {
+      c.fail('CONFIG_NAME_RESOLVES', `${at}.from`, `is ${show(e.from)}; a part named in assemble.plan is required — a cut takes pixels out of one plan part's layer`);
+    }
+    if ('into' in e && c.string(`${at}.into`, e.into)) {
+      const name = e.into;
+      if (!partNameOk(name)) c.fail('CONFIG_PART_NAME', `${at}.into`, `names the part ${show(name)}; a part name is a file name, so it may not be empty, start with "." or hold a slash`);
+      if (plan.includes(name)) c.fail('CONFIG_PART_UNIQUE', `${at}.into`, `names the part "${name}", which assemble.plan[${plan.indexOf(name)}] already makes; a cut makes a part of its own`);
+      else if (patches.includes(name)) c.fail('CONFIG_PART_UNIQUE', `${at}.into`, `names the part "${name}", which assemble.patches[${patches.indexOf(name)}] already makes; a cut makes a part of its own`);
+      else if (seen.has(name)) c.fail('CONFIG_PART_UNIQUE', `${at}.into`, `names the part "${name}" again (first at cuts[${seen.get(name)}])`);
+      else seen.set(name, i);
+      names.push(name);
+    }
+    if ('polygon' in e) {
+      const g = e.polygon;
+      const point = (q: Json): boolean => Array.isArray(q) && q.length === 2 && q.every((n) => typeof n === 'number' && Number.isInteger(n) && n >= 0);
+      if (!(Array.isArray(g) && g.length >= 3 && g.every(point))) {
+        c.fail('CONFIG_FIELD_TYPE', `${at}.polygon`, `is ${show(g)}; at least three [x, y] points in non-negative integer rig pixels are required`);
+      }
+    }
+    if ('draw' in e) {
+      const d = e.draw;
+      if (d === 'back' || d === 'front') return;
+      if (typeof d === 'object' && d !== null && !Array.isArray(d)) {
+        const o = c.object(`${at}.draw`, d, ['before'], []);
+        if (o !== null && 'before' in o && (typeof o.before !== 'string' || !plan.includes(o.before))) {
+          c.fail('CONFIG_NAME_RESOLVES', `${at}.draw.before`, `is ${show(o.before)}; a part named in assemble.plan is required`);
+        }
+        return;
+      }
+      c.fail('CONFIG_FIELD_TYPE', `${at}.draw`, `is ${show(d)}; "back", "front" or {"before": "<plan part>"} is required`);
+    }
+  });
+  return names;
 }
 
 /**
@@ -1710,8 +1793,9 @@ function checkRegions(c: Check, v: Json, bones: Set<string>): void {
 }
 
 /**
- * Every plan part is exactly one of a mesh or a region, every patch is a
- * region, and every mesh or region is a plan part or a patch.
+ * Every plan part — and every cut's piece, which the caller lists with them —
+ * is exactly one of a mesh or a region, every patch is a region, and every
+ * mesh or region is one of those parts or a patch.
  */
 function checkCoverage(c: Check, parts: string[], patches: string[], meshes: Json, regions: Json): void {
   const m = typeof meshes === 'object' && meshes !== null ? Object.keys(meshes) : [];
@@ -1728,7 +1812,7 @@ function checkCoverage(c: Check, parts: string[], patches: string[], meshes: Jso
   }
   for (const name of [...m, ...r]) {
     if (!parts.includes(name) && !patches.includes(name)) {
-      c.fail('CONFIG_NAME_RESOLVES', `config.${m.includes(name) ? 'meshes' : 'regions'}.${name}`, 'names a part that neither assemble.plan nor assemble.patches makes');
+      c.fail('CONFIG_NAME_RESOLVES', `config.${m.includes(name) ? 'meshes' : 'regions'}.${name}`, 'names a part that neither assemble.plan nor assemble.patches makes (nor an assemble.cuts entry)');
     }
   }
 }

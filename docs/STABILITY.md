@@ -105,10 +105,12 @@ part name, `[i]` an entry of a list):
 - **generation.sampler** — required: `steps`, `cfg`, `sampler`, `scheduler`
 - **generation.control** — required: `skeleton`, `strength`, `end_percent`; optional: `model`
 - **seethrough** — required: `resolution`, `steps`, `seed`, `offload`; optional: `head_box`
-- **assemble** — required: `rig_scale`, `plan` (from plain `assemble` on); optional: `extend_below_crop`, `patches`
+- **assemble** — required: `rig_scale`, `plan` (from plain `assemble` on); optional: `extend_below_crop`, `patches`, `cuts`
 - **assemble.extend_below_crop[i]** — required: `part`, `run`, `tag`
 - **assemble.patches[i]** — required: `name`, `box`, `alpha`, `draw`
 - **assemble.patches[i].draw**, when an object — required: `before`
+- **assemble.cuts[i]** — required: `from`, `into`, `polygon`, `draw`, `overlap`
+- **assemble.cuts[i].draw**, when an object — required: `before`
 - **bones[i]**, a single bone — required: `name`, `parent`, `at`; optional: `tip`
 - **bones[i]**, a chain — required: `chain`, `parent`, `points`, `tip`
 - **meshes.&lt;part&gt;** — exactly one of `grid`, `contour`, `auto`; required in every mode: `r`, `segments`; optional in every mode: `exponent`, `rule`; optional with `contour` or `auto`: `ribs`

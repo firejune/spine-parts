@@ -75,6 +75,13 @@ stage writes are the whole interface.
    `assemble.patches` entry (a rig-pixel box, `alpha: "silhouette"`, drawn
    `"back"` and reaching under its neighbours, its bone in `regions`) and assemble
    again; never add a part to `rig/` or `parts/` by hand (AUTHORING §5).
+   One layer holding two things that must move apart (a scarf end inside
+   `topwear`, both arms in one `handwear`): add an `assemble.cuts` entry — a
+   polygon in rig pixels read off `work/rig/parts/<part>.png` plus its
+   `parts.json` `x`, `y`, a new name, a `draw`, an `overlap` (the band the part
+   keeps under the piece's edge; 1 px closed the seam on scarf) — and give the piece its own
+   `meshes` entry; the `cut:` line gives the split. At overlap 0 a cut through
+   opaque art leaves a seam `check` reads (AUTHORING §5).
    A seated or reclining figure: add `--keypoints <file>` (body-18 joints in
    painting px, each observed, occluded or missing; AUTHORING §3, *A posed
    figure*) so the neck, hip, chest and sleeves follow the pose and LINT reads

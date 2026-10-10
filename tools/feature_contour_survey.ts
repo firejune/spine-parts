@@ -778,7 +778,8 @@ export function faceFixture(cfg: CharacterConfig, parts: readonly PlacedPart[]):
     return out;
   };
   const grids = Object.entries(cfg.meshes as Record<string, { grid?: number }>)
-    .filter(([name, m]) => m.grid !== undefined && (cfg.assemble.plan.find((e) => e[0] === name)?.[1] ?? '') === 'head')
+    // A cut's piece (assemble.cuts) is of its from part's run.
+    .filter(([name, m]) => m.grid !== undefined && (cfg.assemble.plan.find((e) => e[0] === (cfg.assemble.cuts?.find((q) => q.into === name)?.from ?? name))?.[1] ?? '') === 'head')
     .map(([name, m]) => ({ name, grid: m.grid as number }))
     .sort((a, b) => a.grid - b.grid || (a.name < b.name ? -1 : 1));
   if (grids.length === 0) throw new Error('feature_contour_survey: the sample tracks no grid on a head-run mesh part');

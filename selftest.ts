@@ -143,6 +143,8 @@ import {
   seamOverride,
   type SeamRule,
   sourceInRig,
+  cutBand,
+  pixelsInPolygon,
   stageFields,
   visibilityCounts,
 } from './src/assemble.ts';
@@ -184,7 +186,7 @@ import { COMPOSED_HAND_X, COMPOSED_SHOULDER, writeComposedRig, DRIVER_AT, DRIVER
 import { buildHeaderProblem } from './tools/atlas_population.ts';
 import { ALIAS, AliasTarballError, compareTarballs, MANIFEST as ALIAS_MANIFEST, packAlias, packInto, renamed } from './scripts/alias_tarball.ts';
 import { BLINK, blinkHoldMisses, CONTROL_SUFFIX, framesInside, IDLE_FPS, type MotionKey, type MotionSpec, sineTrack } from './src/motion.ts';
-import { type BoneEntry, type CharacterConfig, CONFIG_REQUIRES, type ContourRegionSpec, type Patch, type Point, type ConfigDoor, CONSTRAINT_BONE_FIELDS, type Generation, isDoorKey, loadConfig, loadConfigAndAnimations, loadEarlyConfig, parseConfig, parseEarlyConfig, type SkeletonSections } from './src/config.ts';
+import { type BoneEntry, type CharacterConfig, CONFIG_REQUIRES, type ContourRegionSpec, type Cut, type Patch, type Point, type ConfigDoor, CONSTRAINT_BONE_FIELDS, type Generation, isDoorKey, loadConfig, loadConfigAndAnimations, loadEarlyConfig, parseConfig, parseEarlyConfig, type SkeletonSections } from './src/config.ts';
 import { RIG_KEYS, RIG_SKIN_CONSTRAINT_KEYS } from 'rig-c/src/rig.ts';
 import { type BoneTransform, computeExactFrameTransforms, cropToSpineY, toWorld } from './src/coords.ts';
 import { artMask, contourFit, type ContourMesh, contourMesh, contourOutline, type ContourParams, type ContourRegion, contourTopologyProblems, delaunayViolations, GRID, growSilhouette, inCircle, keepPoints, MAX_SIDE, marginDisc, outlineInRegions, withinMarginSquared } from './src/contour.ts';
@@ -1333,6 +1335,100 @@ function runConfigSuite(): number {
         ? `three patches (back, before robe, front; silhouette and box) load; ${patchOutcomes.length} planted entries, each refused exactly once under its code and object; e.g. ${boneLine?.code}: ${boneLine?.object} — ${boneLine?.detail}`
         : patchMissed.map((o) => `${o.what}: wanted ${o.code} at ${o.object}, got ${o.got}`).join(' | '),
     'issue #28: a patch is a part the tool cuts from the painting, so every field that places it resolves by name or is refused by name; the bone is not a patch field because a region\'s bone already has one place, config.regions',
+  );
+
+  // assemble.cuts (issue #170): one entry that loads — its piece a mesh, unlike a patch — then every malformed one alone,
+  // each refused exactly once under its code and its object.
+  const cutCfg = (entries: unknown[], edit: (c: Record<string, unknown>) => void = () => {}): Record<string, unknown> => {
+    const c = minimalConfig();
+    const a = c.assemble as Record<string, unknown>;
+    a.patches = [hem];
+    a.cuts = entries;
+    (c.regions as Record<string, unknown>).hem = 'hip';
+    const regions = c.regions as Record<string, unknown>;
+    for (const e of entries) if (typeof e === 'object' && e !== null && typeof (e as { into?: unknown }).into === 'string') regions[(e as { into: string }).into] = 'hip';
+    edit(c);
+    return c;
+  };
+  const tie = { from: 'robe', into: 'tie', polygon: [[2, 40], [30, 40], [30, 44]], draw: 'front', overlap: 0 };
+  const cutOk = refusals(() =>
+    parseConfig(
+      cutCfg([tie, { ...tie, into: 'tie2', draw: { before: 'face' } }, { ...tie, from: 'face', into: 'tie3', draw: 'back' }], (c) => {
+        delete (c.regions as Record<string, unknown>).tie;
+        (c.meshes as Record<string, unknown>).tie = { grid: 8, r: 4, segments: ['hem'] };
+      }),
+    ),
+  );
+  const cutMutants: Array<[string, unknown[], string, string, ((c: Record<string, unknown>) => void)?]> = [
+    ['a from no plan part has', [{ ...tie, from: 'skirt' }], 'CONFIG_NAME_RESOLVES', 'config.assemble.cuts[0].from'],
+    ['a from that is a patch', [{ ...tie, from: 'hem' }], 'CONFIG_NAME_RESOLVES', 'config.assemble.cuts[0].from'],
+    ["a from that is another cut's piece", [tie, { ...tie, from: 'tie', into: 'tie2' }], 'CONFIG_NAME_RESOLVES', 'config.assemble.cuts[1].from'],
+    ['an into a plan part already has', [{ ...tie, into: 'face' }], 'CONFIG_PART_UNIQUE', 'config.assemble.cuts[0].into'],
+    ['an into a patch already has', [{ ...tie, into: 'hem' }], 'CONFIG_PART_UNIQUE', 'config.assemble.cuts[0].into'],
+    ['an into two cuts share', [tie, { ...tie, polygon: [[2, 50], [30, 50], [30, 54]] }], 'CONFIG_PART_UNIQUE', 'config.assemble.cuts[1].into'],
+    ['an into that is a path', [{ ...tie, into: 'tie/x' }], 'CONFIG_PART_NAME', 'config.assemble.cuts[0].into'],
+    ['a polygon of two points', [{ ...tie, polygon: [[2, 40], [30, 40]] }], 'CONFIG_FIELD_TYPE', 'config.assemble.cuts[0].polygon'],
+    ['a polygon with a negative coordinate', [{ ...tie, polygon: [[2, 40], [30, -1], [30, 44]] }], 'CONFIG_FIELD_TYPE', 'config.assemble.cuts[0].polygon'],
+    ['a polygon with a fractional coordinate', [{ ...tie, polygon: [[2, 40], [30.5, 40], [30, 44]] }], 'CONFIG_FIELD_TYPE', 'config.assemble.cuts[0].polygon'],
+    ['a polygon point of three numbers', [{ ...tie, polygon: [[2, 40, 0], [30, 40], [30, 44]] }], 'CONFIG_FIELD_TYPE', 'config.assemble.cuts[0].polygon'],
+    ['a draw value that is no position', [{ ...tie, draw: 'middle' }], 'CONFIG_FIELD_TYPE', 'config.assemble.cuts[0].draw'],
+    ['a draw target no plan part has', [{ ...tie, draw: { before: 'hem' } }], 'CONFIG_NAME_RESOLVES', 'config.assemble.cuts[0].draw.before'],
+    ['a missing field', [{ from: 'robe', into: 'tie', polygon: tie.polygon, overlap: 0 }], 'CONFIG_FIELD_PRESENT', 'config.assemble.cuts[0].draw'],
+    ['an unknown field', [{ ...tie, bone: 'hip' }], 'CONFIG_KEY_KNOWN', 'config.assemble.cuts[0].bone'],
+    ['cuts that are not an array', [], 'CONFIG_FIELD_TYPE', 'config.assemble.cuts', (c) => { (c.assemble as Record<string, unknown>).cuts = { tie }; }],
+  ];
+  const cutOutcomes = cutMutants.map(([what, entries, code, object, edit]) => {
+    const err = refusals(() => parseConfig(cutCfg(entries, edit)));
+    const one = err !== null && err.problems.length === 1 ? err.problems[0] : null;
+    return { what, code, object, ok: one !== null && one.code === code && one.object === object, got: err === null ? 'loads' : err.problems.map((q) => `${q.code} ${q.object}`).join('; '), line: one };
+  });
+  const cutMissed = cutOutcomes.filter((o) => !o.ok);
+  const intoLine = cutOutcomes.find((o) => o.what === 'an into a plan part already has')?.line;
+  say(
+    'CF73_A_CUT_ENTRY_LOADS_AND_EVERY_MALFORMED_ONE_IS_REFUSED_ONCE_BY_NAME',
+    cutOk === null && cutMissed.length === 0 && (intoLine?.detail.includes('assemble.plan[1]') ?? false),
+    cutOk !== null
+      ? `three good cuts (front, before face, back; one piece a mesh) are refused: ${codes(cutOk)}`
+      : cutMissed.length === 0
+        ? `three cuts (front, before face, back; the first piece a mesh) load; ${cutOutcomes.length} planted entries, each refused exactly once under its code and object; e.g. ${intoLine?.code}: ${intoLine?.object} — ${intoLine?.detail}`
+        : cutMissed.map((o) => `${o.what}: wanted ${o.code} at ${o.object}, got ${o.got}`).join(' | '),
+    'issue #170: a cut takes one plan part\'s pixels into a new part, so its source resolves to a plan part by name, its new name collides with no other part, and its polygon is rig pixels or nothing; a piece of a piece or of a patch would have no single layer behind it',
+  );
+
+  // The piece is a part like any other: the coverage rule holds it (neither a mesh nor a region is refused naming it),
+  // two malformed cuts are named in one refusal, and plain assemble's early door reads the field with the same rules.
+  const unattachedCut = refusals(() => parseConfig(cutCfg([tie], (c) => { delete (c.regions as Record<string, unknown>).tie; })));
+  const bothCut = refusals(() => parseConfig(cutCfg([{ ...tie, from: 'skirt' }, { ...tie, into: 'tie2', polygon: [[1, 1]] }])));
+  const early = (cuts: unknown): Record<string, unknown> => ({ key: 'k', seethrough: { resolution: 64, steps: 1, seed: 0, offload: false, head_box: [0, 0, 32, 32] }, assemble: { rig_scale: 0.5, plan: (minimalConfig().assemble as Record<string, unknown>).plan, cuts } });
+  const earlyOk = refusals(() => parseEarlyConfig(early([tie]), 'assemble'));
+  const earlyBad = refusals(() => parseEarlyConfig(early([{ ...tie, from: 'skirt' }]), 'assemble'));
+  const layersDoor = refusals(() => parseEarlyConfig(early([{ ...tie, from: 'skirt' }]), 'layers'));
+  const pairs = (e: PartsError | null): string => (e === null ? 'loads' : e.problems.map((q) => `${q.code} ${q.object}`).join('; '));
+  say(
+    'CF74_A_CUT_PIECE_MUST_BE_ATTACHED_AND_EVERY_BAD_CUT_IS_NAMED_IN_ONE_REFUSAL_THROUGH_EITHER_DOOR',
+    pairs(unattachedCut) === 'CONFIG_PART_ATTACHED part "tie"' &&
+      pairs(bothCut) === 'CONFIG_NAME_RESOLVES config.assemble.cuts[0].from; CONFIG_FIELD_TYPE config.assemble.cuts[1].polygon' &&
+      earlyOk === null &&
+      pairs(earlyBad) === 'CONFIG_NAME_RESOLVES config.assemble.cuts[0].from' &&
+      layersDoor === null,
+    `a piece with neither a mesh nor a region -> ${pairs(unattachedCut)}; a bad from and a one-point polygon -> ${pairs(bothCut)}; plain assemble's door: a good cut -> ${pairs(earlyOk)}, a bad from -> ${pairs(earlyBad)}; the layers door, which reads no plan -> ${pairs(layersDoor)}`,
+    'a piece the rig cannot attach is a refusal before any stage runs, as for a plan part; and assemble, which makes the piece, reads the field before it writes',
+  );
+
+  // A cut's overlap is required and is a whole number of rig pixels, 0 allowed: no width is guessed for the band.
+  const overlapOf = (o: unknown): string => {
+    const entry: Record<string, unknown> = { ...tie, overlap: o };
+    if (o === undefined) delete entry.overlap;
+    const e = refusals(() => parseConfig(cutCfg([entry])));
+    return e === null ? 'loads' : e.problems.map((q) => `${q.code} ${q.object}`).join('; ');
+  };
+  const ov = { zero: overlapOf(0), three: overlapOf(3), missing: overlapOf(undefined), negative: overlapOf(-1), half: overlapOf(1.5), text: overlapOf('2') };
+  say(
+    'CF77_A_CUT_S_OVERLAP_IS_REQUIRED_AND_A_NON_NEGATIVE_INTEGER',
+    ov.zero === 'loads' && ov.three === 'loads' && ov.missing === 'CONFIG_FIELD_PRESENT config.assemble.cuts[0].overlap' &&
+      [ov.negative, ov.half, ov.text].every((x) => x === 'CONFIG_FIELD_TYPE config.assemble.cuts[0].overlap'),
+    `0 -> ${ov.zero}; 3 -> ${ov.three}; absent -> ${ov.missing}; -1 -> ${ov.negative}; 1.5 -> ${ov.half}; "2" -> ${ov.text}`,
+    'HQ\'s ruling on #170: the band the base keeps under a piece is the author\'s to state, like draw — absent is a refusal naming the field, never a default',
   );
 
   runBlinkConfigCases(say);
@@ -10790,6 +10886,187 @@ function runAssembleSuite(): number {
       );
     }
 
+    // Issue #170: assemble.cuts. AS48 holds the polygon rule to hand-counted pixels; AS49–AS52 run the stage on one
+    // full-run fixture: "handwear-l" opaque over [2, 12) x [10, 40) and "topwear" over [20, 40) x [10, 40), both colour C
+    // at 255 on the flat painting, the head run FRAMED_HEAD; the rig is the 64x64 painting at scale 1, so a rig pixel is
+    // a run pixel and topwear is 20 x 30 = 600 opaque px.
+    //
+    // AS48, by hand. The L [[0,0],[4,0],[4,2],[2,2],[2,4],[0,4]] on a 6x6 grid: rows 0 and 1 cross at 0 and 4, so
+    // centres x + 0.5 in (0, 4) = x 0..3; rows 2 and 3 cross at 0 and 2 = x 0..1: 8 + 4 = 12 px. The triangle
+    // [[0,0],[4,0],[0,4]] holds a centre where (x + 0.5) + (y + 0.5) < 4, x + y < 3: (0,0) (1,0) (2,0) (0,1) (1,1) (0,2),
+    // 6 px; the centres (0.5, 3.5), (1.5, 2.5), (2.5, 1.5), (3.5, 0.5) lie ON the hypotenuse and are outside. A polygon
+    // reaching past the grid, [[2,0],[9,0],[9,9],[2,9]] on the 6x6 grid, is clipped to it: x 2..5, every row, 24 px.
+    const maskSet = (m: { width: number; data: Uint8Array }): string => {
+      const out: string[] = [];
+      for (let q = 0; q < m.data.length; q++) if (m.data[q] === 1) out.push(`${q % m.width},${Math.floor(q / m.width)}`);
+      return out.join(' ');
+    };
+    const ell = pixelsInPolygon([[0, 0], [4, 0], [4, 2], [2, 2], [2, 4], [0, 4]], 6, 6);
+    const tri = pixelsInPolygon([[0, 0], [4, 0], [0, 4]], 6, 6);
+    const past = pixelsInPolygon([[2, 0], [9, 0], [9, 9], [2, 9]], 6, 6);
+    const ellWant = '0,0 1,0 2,0 3,0 0,1 1,1 2,1 3,1 0,2 1,2 0,3 1,3';
+    const triWant = '0,0 1,0 2,0 0,1 1,1 0,2';
+    const pastN = past.data.reduce((a, v) => a + v, 0);
+    say(
+      'AS48_A_CUT_POLYGON_HOLDS_THE_PIXELS_WHOSE_CENTRES_IT_HOLDS_EVEN_ODD_AND_AN_EDGE_THROUGH_A_CENTRE_LEAVES_IT_OUT',
+      maskSet(ell) === ellWant && maskSet(tri) === triWant && pastN === 24 && maskSet(past).split(' ').every((p) => Number(p.split(',')[0]) >= 2),
+      `L -> ${maskSet(ell)} (by hand ${ellWant}); triangle -> ${maskSet(tri)} (by hand ${triWant}); a polygon past the 6x6 grid -> ${pastN} px (by hand 24)`,
+      'the cut is geometry the author states in rig pixels, so which pixel it takes must follow from the numbers alone: the centre rule, the even-odd rule on a concave outline, a centre exactly on an edge (outside) and a polygon past the rig (clipped) are each one line a plausible rasteriser gets wrong',
+    );
+
+    const cutStage = temp('assemble-cut');
+    try {
+      const cutFull: Parameters<typeof writeRun>[1] = [
+        { name: 'handwear-l', depth: 0.6, rects: [{ x0: 2, y0: 10, x1: 12, y1: 40, colour: C }] },
+        { name: 'topwear', depth: 0.5, rects: [{ x0: 20, y0: 10, x1: 40, y1: 40, colour: C }] },
+      ];
+      const cutPlan: Array<[string, 'full' | 'head', string]> = [['handwear_l', 'full', 'handwear-l'], ['topwear', 'full', 'topwear']];
+      const runCut = (label: string, cuts: Array<Record<string, unknown>>): { r: ReturnType<typeof assemble>; lines: string[]; out: string } => {
+        const d = join(cutStage, label);
+        writeRun(join(d, 'full'), cutFull);
+        writeRun(join(d, 'head'), FRAMED_HEAD);
+        writeFileSync(join(d, 'painting.png'), encodePngBytes(flatPainting()));
+        const cfg = assembleConfig({ plan: cutPlan, extend: [] });
+        if (cuts.length > 0) (cfg.assemble as Record<string, unknown>).cuts = cuts;
+        writeFileSync(join(d, 'config.json'), JSON.stringify(cfg));
+        const lines: string[] = [];
+        const out = join(d, 'out');
+        const r = assembleStage(
+          { source: join(d, 'painting.png'), full: join(d, 'full'), head: join(d, 'head'), config: join(d, 'config.json'), seam: 'near-white', project: DEFAULT_PROJECT_RULE },
+          { partsJson: join(out, 'parts.json'), partsDir: join(out, 'parts'), recomposite: join(out, 'recomposite_rig.png'), errorMap: join(out, 'recomposite_error_rig.png') },
+          (l) => lines.push(l),
+        );
+        return { r, lines, out };
+      };
+      // The triangle [[20,10],[40,10],[20,30]] takes the centres with (x + 0.5) + (y + 0.5) < 50 inside topwear's box:
+      // u = x - 20, v = y - 10, u + v < 19, so for u = 0..18 the rows v = 0..18 - u — 19 + 18 + … + 1 = 190 px, box
+      // 20,10 19x19. The square [[36,36],[40,36],[40,40],[36,40]] takes x 36..39, y 36..39 = 16 px (u + v >= 32 there,
+      // so it shares no pixel with the triangle). topwear keeps 600 - 190 - 16 = 394, its box still 20,10 20x30 ((39, 10)
+      // and (20, 39) are kept). "tie" is drawn {before: "handwear_l"}, "knot" "front": tie, handwear_l, topwear, knot.
+      const TIE = { from: 'topwear', into: 'tie', polygon: [[20, 10], [40, 10], [20, 30]], draw: { before: 'handwear_l' }, overlap: 0 };
+      const KNOT = { from: 'topwear', into: 'knot', polygon: [[36, 36], [40, 36], [40, 40], [36, 40]], draw: 'front', overlap: 0 };
+      try {
+        const whole = runCut('whole', []);
+        const split = runCut('split', [TIE, KNOT]);
+        const rec = (r: ReturnType<typeof assemble>, n: string): PartRecord => r.parts.parts.find((p) => p.name === n) as PartRecord;
+        const order = split.r.parts.parts.map((p) => p.name).join(', ');
+        const [tw, tie, knot, w] = [rec(split.r, 'topwear'), rec(split.r, 'tie'), rec(split.r, 'knot'), rec(whole.r, 'topwear')];
+        // Every count is split by where the pixel lies, so the three pieces add up to the uncut part, field by field.
+        const fields = ['opaque_px', 'visible_px', 'occluded_px', 'projected_core_px', 'source_px_taken', 'visible_not_projected_px', 'refused_drift_px', 'merged_px', 'seam_override_px'] as const;
+        const unsplit = fields.filter((k) => (tw[k] ?? 0) + (tie[k] ?? 0) + (knot[k] ?? 0) !== (w[k] ?? 0));
+        const line = split.lines.find((l) => l.startsWith('  cut: '));
+        const lineWant = '  cut: "topwear" opaque 600 = "topwear" 394 + "tie" 190 + "knot" 16; band 0 px held by both';
+        const at = split.lines.indexOf(line ?? '');
+        const sameHand = JSON.stringify(rec(split.r, 'handwear_l')) === JSON.stringify(rec(whole.r, 'handwear_l'));
+        const sameStack = figuresLine(split.r.figures) === figuresLine(whole.r.figures) && split.lines.find((l) => l.startsWith('  pixels: ')) === whole.lines.find((l) => l.startsWith('  pixels: '));
+        say(
+          'AS49_A_CUT_TAKES_ITS_POLYGON_S_PIXELS_INTO_A_PART_OF_ITS_OWN_WITH_THE_HAND_COUNTED_SPLIT_AND_NOTHING_ELSE_MOVES',
+          order === 'tie, handwear_l, topwear, knot' &&
+            [tw.opaque_px, tie.opaque_px, knot.opaque_px, w.opaque_px].join(',') === '394,190,16,600' &&
+            [tie.x, tie.y, tie.w, tie.h].join(',') === '20,10,19,19' && [knot.x, knot.y, knot.w, knot.h].join(',') === '36,36,4,4' && [tw.x, tw.y, tw.w, tw.h].join(',') === '20,10,20,30' &&
+            tie.from === 'full:topwear' && knot.from === 'full:topwear' &&
+            unsplit.length === 0 && line === lineWant && at > 0 && split.lines[at + 1].startsWith('  pixels: ') && sameHand && sameStack &&
+            JSON.stringify(split.r.cuts) === '[{"from":"topwear","into":"tie","before":600,"kept":394,"taken":190,"band":0},{"from":"topwear","into":"knot","before":600,"kept":394,"taken":16,"band":0}]' &&
+            whole.r.cuts.length === 0 && !whole.lines.some((l) => l.includes('cut:')),
+          `parts ${order}; opaque topwear ${tw.opaque_px} + tie ${tie.opaque_px} + knot ${knot.opaque_px} vs uncut ${w.opaque_px}; boxes tie ${tie.x},${tie.y} ${tie.w}x${tie.h}, knot ${knot.x},${knot.y} ${knot.w}x${knot.h}, topwear ${tw.x},${tw.y} ${tw.w}x${tw.h}; from ${tie.from}, ${knot.from}; fields not adding up ${unsplit.join(', ') || 'none'}; line ${line ?? 'NONE'} (by hand ${lineWant}), ${at > 0 && split.lines[at + 1].startsWith('  pixels: ') ? 'just above the pixels: line' : 'misplaced'}; handwear_l record unchanged ${sameHand}; recomposite and pixel totals unchanged ${sameStack}; uncut run: ${whole.r.cuts.length} cut(s), ${whole.lines.some((l) => l.includes('cut:')) ? 'a cut line' : 'no cut line'}`,
+          'a cut partitions one layer: every pixel goes to exactly one piece, so the counts add up, the stack composites to the same picture, the other parts do not move, and the piece is drawn where its draw says; without the field nothing is printed or recorded that was not before',
+        );
+
+        // The piece reads back and is a part like any other downstream: propose's config check takes it as a cut of the
+        // part whose layer it shares, holds it to the attachment rule by its own name, and the rig-side readers read it.
+        const set = readPartSet(split.out);
+        const anchorBones = [{ name: 'anchor', parent: 'root', at: [0, 0] as [number, number] }];
+        const proposal = (regions: Record<string, string>): Proposal => ({ bones: anchorBones, meshes: {}, regions, motion: { duration: 1, tracks: [] }, notes: [] });
+        const takes = refusals(() => checkProposal(set, proposal({ handwear_l: 'anchor', topwear: 'anchor', tie: 'anchor', knot: 'anchor' })));
+        const loose = refusals(() => checkProposal(set, proposal({ handwear_l: 'anchor', topwear: 'anchor', tie: 'anchor' })));
+        const looseLine = loose === null ? 'loads' : loose.problems.map((q) => `${q.code} ${q.object}`).join('; ');
+        say(
+          'AS50_THE_PIECE_READS_BACK_AND_PROPOSE_HOLDS_IT_AS_A_CUT_BY_ITS_OWN_NAME',
+          set.recs.map((p) => p.name).join(',') === 'tie,handwear_l,topwear,knot' && takes === null && looseLine === 'CONFIG_PART_ATTACHED part "knot"',
+          `parts.json read back: ${set.recs.map((p) => `${p.name} <- ${p.from}`).join(', ')}; every piece attached -> ${takes === null ? 'loads' : codes(takes)}; "knot" left out -> ${looseLine}`,
+          'propose rebuilds a plan from parts.json to check its proposal against the loader; two parts sharing one layer would read as one layer taken twice (CONFIG_PART_UNIQUE) unless the second goes back as a cut, and then the coverage rule names the piece itself',
+        );
+      } catch (err) {
+        const why = `the stage threw: ${(err as Error).message.split('\n')[0]}`;
+        say('AS49_A_CUT_TAKES_ITS_POLYGON_S_PIXELS_INTO_A_PART_OF_ITS_OWN_WITH_THE_HAND_COUNTED_SPLIT_AND_NOTHING_ELSE_MOVES', false, why, 'the stage must assemble the planted cut green');
+        say('AS50_THE_PIECE_READS_BACK_AND_PROPOSE_HOLDS_IT_AS_A_CUT_BY_ITS_OWN_NAME', false, `not measured: ${why}`, 'the parts AS49 writes are the ones read back here');
+      }
+
+      // Each refusal planted alone, then two of the first phase in one config: both named in one throw.
+      const cutIn = fixtureInput(join(cutStage, 'whole'));
+      const cutOf = (cuts: Cut[]): string => {
+        const e = refusals(() => assemble({ ...cutIn, cuts, seamRule: 'near-white' }));
+        return e === null ? 'assembles' : e.problems.map((q) => `${q.code} ${q.object}: ${q.detail}`).join(' | ');
+      };
+      const tieCut = TIE as Cut;
+      const empty = cutOf([{ ...tieCut, polygon: [[44, 44], [60, 44], [60, 60]] }]);
+      const all = cutOf([{ ...tieCut, polygon: [[20, 10], [40, 10], [40, 40], [20, 40]] }]);
+      const overlap = cutOf([tieCut, { ...tieCut, into: 'knot', polygon: [[20, 10], [25, 10], [25, 15], [20, 15]] }]);
+      const outside = cutOf([{ ...tieCut, polygon: [[20, 10], [65, 10], [20, 30]] }]);
+      const both = cutOf([{ ...tieCut, polygon: [[20, 10], [65, 10], [20, 30]] }, { ...tieCut, into: 'knot', polygon: [[20, 10], [25, 10], [25, 15], [20, 15]] }]);
+      const head = (s: string): string => s.split(' | ').map((q) => q.split(': ')[0]).join(' | ');
+      say(
+        'AS51_A_CUT_THAT_TAKES_NOTHING_OR_EVERYTHING_OVERLAPS_ANOTHER_OR_LIES_PAST_THE_RIG_IS_REFUSED_BY_NAME',
+        empty.startsWith('ASSEMBLE_CUT_PIXELS config.assemble.cuts[0] (part "tie"): takes 0 of "topwear"\'s 600 opaque pixel(s)') &&
+          all.startsWith('ASSEMBLE_CUT_PIXELS part "topwear" (full:topwear, config.assemble.plan[1]): keeps 0 of its 600 opaque pixel(s): cuts[0] ("tie") takes 600') &&
+          // The square's 25 px all have u + v <= 8 < 19, so all 25 are the triangle's; the first in scan order is (20, 10).
+          overlap.startsWith('ASSEMBLE_CUT_OVERLAP config.assemble.cuts[1] (part "knot"): shares 25 rig pixel(s) with cuts[0] (part "tie"), the first at 20,10') &&
+          outside.startsWith('ASSEMBLE_CUT_INSIDE config.assemble.cuts[0] (part "tie"): polygon point(s) [65, 10] lie past the 64x64 rig') &&
+          head(both) === 'ASSEMBLE_CUT_INSIDE config.assemble.cuts[0] (part "tie") | ASSEMBLE_CUT_OVERLAP config.assemble.cuts[1] (part "knot")',
+        `over empty pixels -> ${empty}; over the whole part -> ${all}; two cuts sharing a 5x5 corner -> ${overlap}; a point at x 65 -> ${outside}; that point and that overlap together -> ${head(both)}`,
+        'a cut that takes no art makes an empty part, one that takes all of it leaves an empty one (the plan part should be renamed instead), two that share a pixel would give it to both pieces, and a polygon past the rig was written in some other space — each is named with the numbers, and the ones found before any pixel work are named together',
+      );
+
+      // The band (HQ's ruling on the seam): the rectangle [[30,10],[40,10],[40,40],[30,40]] takes x 30..39, y 10..39 =
+      // 300 px. At overlap 2 the band is the rectangle less its erosion by a 5x5 square: the inner pixels are x 32..37,
+      // y 12..37 = 6 x 26 = 156, so the band is 300 - 156 = 144 px, all opaque. The base keeps its strict 300 and the
+      // band as well: 444 opaque px in its image; the piece is the same 300 px at either overlap. At overlap 0 the
+      // band is empty and the base is the strict 300, as a cut wrote before the field existed.
+      try {
+        const RECT = { from: 'topwear', into: 'tie', polygon: [[30, 10], [40, 10], [40, 40], [30, 40]], draw: 'front' };
+        const b0 = runCut('band0', [{ ...RECT, overlap: 0 }]);
+        const b2 = runCut('band2', [{ ...RECT, overlap: 2 }]);
+        const rec = (r: ReturnType<typeof assemble>, n: string): PartRecord => r.parts.parts.find((p) => p.name === n) as PartRecord;
+        const line0 = b0.lines.find((l) => l.startsWith('  cut: ')) ?? 'NONE';
+        const line2 = b2.lines.find((l) => l.startsWith('  cut: ')) ?? 'NONE';
+        const [t0, t2, p0, p2] = [rec(b0.r, 'topwear'), rec(b2.r, 'topwear'), rec(b0.r, 'tie'), rec(b2.r, 'tie')];
+        const bandMask = cutBand(pixelsInPolygon([[30, 10], [40, 10], [40, 40], [30, 40]], 64, 64), 2);
+        const bandN = bandMask.data.reduce((a, v) => a + v, 0);
+        say(
+          'AS53_A_CUT_S_OVERLAP_LEAVES_THE_HAND_COUNTED_BAND_IN_THE_BASE_AS_WELL_AND_0_LEAVES_NONE',
+          bandN === 144 &&
+            line0 === '  cut: "topwear" opaque 600 = "topwear" 300 + "tie" 300; band 0 px held by both' &&
+            line2 === '  cut: "topwear" opaque 600 = "topwear" 300 + "tie" 300; band 144 px held by both' &&
+            t0.opaque_px === 300 && [t0.x, t0.w].join(',') === '20,10' &&
+            t2.opaque_px === 444 && [t2.x, t2.w].join(',') === '20,20' &&
+            JSON.stringify(p0) === JSON.stringify(p2) && p0.opaque_px === 300 &&
+            figuresLine(b0.r.figures) === figuresLine(b2.r.figures),
+          `band mask ${bandN} px (by hand 144); overlap 0: ${line0}, base ${t0.opaque_px} px at x ${t0.x} w ${t0.w}; overlap 2: ${line2}, base ${t2.opaque_px} px at x ${t2.x} w ${t2.w}; piece records equal ${JSON.stringify(p0) === JSON.stringify(p2)}; recomposite unchanged ${figuresLine(b0.r.figures) === figuresLine(b2.r.figures)}`,
+          'the partition stays strict for the counts the line states, and the band is the base\'s extra copy under the piece\'s edge: its width is the author\'s, it adds exactly its own pixels to the base, it changes nothing of the piece or of the flat stack, and 0 adds nothing — the two abut, which the seam bar judges',
+        );
+      } catch (err) {
+        say('AS53_A_CUT_S_OVERLAP_LEAVES_THE_HAND_COUNTED_BAND_IN_THE_BASE_AS_WELL_AND_0_LEAVES_NONE', false, `the stage threw: ${(err as Error).message.split('\n')[0]}`, 'the stage must assemble the planted band green');
+      }
+    } finally {
+      rmSync(cutStage, { recursive: true, force: true });
+    }
+
+    // The draw order of plan parts, patches and cuts, by hand: "back" patches then "back" cuts; each plan part after the
+    // patches and then the cuts drawn {before} it; "front" patches then "front" cuts. Without cuts it is what it was.
+    const pq = (name: string, draw: Patch['draw']): Patch => ({ name, box: [0, 0, 1, 1], alpha: 'box', draw });
+    const cq = (into: string, draw: Cut['draw']): Cut => ({ from: 'a', into, polygon: [[0, 0], [1, 0], [0, 1]], draw, overlap: 0 });
+    const ps = [pq('p1', 'back'), pq('p2', { before: 'b' }), pq('p3', 'front')];
+    const cs = [cq('c1', 'front'), cq('c2', 'back'), cq('c3', { before: 'b' }), cq('c4', { before: 'a' })];
+    const named = (o: ReturnType<typeof drawOrder>): string => o.map((d) => ('plan' in d ? ['a', 'b'][d.plan] : 'patch' in d ? ps[d.patch].name : cs[d.cut].into)).join(',');
+    const mixed = named(drawOrder(['a', 'b'], ps, cs));
+    const bare = JSON.stringify(drawOrder(['a', 'b'], ps)) === JSON.stringify(drawOrder(['a', 'b'], ps, []));
+    say(
+      'AS52_A_CUT_PIECE_IS_DRAWN_WHERE_ITS_DRAW_SAYS_BESIDE_THE_PATCHES',
+      mixed === 'p1,c2,c4,a,p2,c3,b,p3,c1' && bare,
+      `plan a, b; patches back p1, before b p2, front p3; cuts front c1, back c2, before b c3, before a c4 -> ${mixed} (by hand p1,c2,c4,a,p2,c3,b,p3,c1); no cuts = the two-list order: ${bare}`,
+      'parts.json order is draw order and the rig\'s slots follow it; a piece needs a place of its own, stated by the author with the vocabulary a patch already has, and a config without cuts must draw what it drew before',
+    );
+
     // Derivation (fixtures/assemble_fixture.ts): full-run tags with >= 150 run px
     // are headwear (192), bottomwear (336) and topwear (600) — back hair (132) and
     // footwear (120 after its speck) fall short; head-run tags: back hair (704) and
@@ -12163,14 +12440,19 @@ function layerSetMismatch(seen: ReadonlySet<string>, expected: PartsFile): strin
 }
 
 /**
- * Where a config's plan and patches disagree with the expected parts list: same
- * names, same `<run>:<tag>` (a patch's is `painting:<name>`), in the order the
- * stage draws them (`drawOrder`: "back" patches, each plan part after the
- * patches drawn before it, "front" patches). With no patches that is the plan.
+ * Where a config's plan, patches and cuts disagree with the expected parts
+ * list: same names, same `<run>:<tag>` (a patch's is `painting:<name>`, a
+ * cut's piece its from part's), in the order the stage draws them
+ * (`drawOrder`: "back" patches and cuts, each plan part after the patches and
+ * cuts drawn before it, "front" patches and cuts). With neither that is the plan.
  */
-function planMismatch(plan: ReadonlyArray<readonly [string, string, string]>, expected: PartsFile, patches: readonly Patch[] = []): string[] {
-  const want = drawOrder(plan.map(([name]) => name), patches).map((d) => {
+function planMismatch(plan: ReadonlyArray<readonly [string, string, string]>, expected: PartsFile, patches: readonly Patch[] = [], cuts: readonly Cut[] = []): string[] {
+  const want = drawOrder(plan.map(([name]) => name), patches, cuts).map((d) => {
     if ('plan' in d) return `${plan[d.plan][0]}=${plan[d.plan][1]}:${plan[d.plan][2]}`;
+    if ('cut' in d) {
+      const from = plan.find(([name]) => name === cuts[d.cut].from);
+      return `${cuts[d.cut].into}=${from === undefined ? '?' : `${from[1]}:${from[2]}`}`;
+    }
     return `${patches[d.patch].name}=${PAINTING_RUN}:${patches[d.patch].name}`;
   });
   const got = expected.parts.map((p) => `${p.name}=${p.from}`);
@@ -12225,7 +12507,7 @@ function runExamplesHalf(keys: ExampleKeys, say: (name: string, ok: boolean, det
         const config = loadConfig(join(EXAMPLES_DIR, key, 'config.json'));
         const patches = config.assemble.patches ?? [];
         patched.push(...patches.map((q) => `${key}/${q.name}`));
-        const miss = planMismatch(config.assemble.plan, expected, patches);
+        const miss = planMismatch(config.assemble.plan, expected, patches, config.assemble.cuts ?? []);
         const extendTags = (config.assemble.extend_below_crop ?? []).map((e) => `${e.run}:${e.tag}`).filter((t) => readAll && !seen.has(t));
         if (miss.length === 0 && extendTags.length === 0) configs.push(`${key} ${config.assemble.plan.length} part(s)${patches.length > 0 ? ` and ${patches.length} patch(es)` : ''}`);
         else configFailed.push(`${key}: ${[...miss, ...(extendTags.length > 0 ? [`extend_below_crop takes ${extendTags.join(', ')}, which no layer read here is`] : [])].join('; ')}`);

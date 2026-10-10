@@ -68,10 +68,15 @@
  * - **Patches** (`assemble.patches`, `cutPatch`) are this port's: an extra
  *   part cut from the painting itself, for a piece of the figure no layer
  *   holds, recorded as `painting:<name>` and 100 % source.
+ * - **Cuts** (`assemble.cuts`, `cutPart`, issue #170) are this port's: a
+ *   declared polygon takes a plan part's pixels out of it into a new part,
+ *   recorded with the same `<run>:<tag>` (its pixels came from that layer).
+ *   The cut is made after step 4, so the new part takes the merged pixels and
+ *   every later step treats it as a part of its own.
  *
  * Pure: no clock, no randomness, no file access. The CLI reads and writes.
  */
-import type { CharacterConfig, EarlyConfig, Extend, Patch, PlanEntry, Run, SeeThrough } from './config.ts';
+import type { CharacterConfig, Cut, EarlyConfig, Extend, Patch, PlanEntry, Run, SeeThrough } from './config.ts';
 import { type Problem, refuseIfAny } from './errors.ts';
 import { figuresPhrase, implausibleRules, type Layer, type LayerFigures, layerFigures, type LayerSet, NEAR_WHITE_MIN, OPAQUE_ALPHA_ABOVE, ruleSummary } from './layers.ts';
 import { squarePad } from './inputs.ts';
@@ -206,6 +211,8 @@ export interface AssembleInput {
   extend: Extend[];
   /** `assemble.patches`: extra parts cut from the painting, placed per their `draw` (`placePatches`). */
   patches: Patch[];
+  /** `assemble.cuts`: plan parts' pixels taken into new parts by polygon (`cutPart`), placed per their `draw`. */
+  cuts: Cut[];
   seamRule: SeamRule;
   projectRule: ProjectRule;
 }
@@ -439,6 +446,9 @@ export interface ProjectionStats {
   clear: Mask;
   /** The pixels counted in `taken`: the accepted set, cut to the core. */
   takenMask: Mask;
+  /** The pixels counted in `core`, and in `refused`; null when the layer has no top-most pixel (both counts 0). A cut splits the counts by these. */
+  coreMask: Mask | null;
+  refusedMask: Mask | null;
 }
 
 function maxDiff(a: Uint8ClampedArray, i: number, b: Uint8ClampedArray, j: number): number {
@@ -501,7 +511,7 @@ export function projectSource(rigLayers: Raster[], srcr: Raster, frame: Frame, r
         anyTop = true;
       }
     }
-    if (!anyTop) return { core: 0, taken: 0, refused: 0, clear, takenMask };
+    if (!anyTop) return { core: 0, taken: 0, refused: 0, clear, takenMask, coreMask: null, refusedMask: null };
     let core: Mask;
     if (rule === 'core') core = erode(top, CORE_KERNEL);
     else {
@@ -512,13 +522,17 @@ export function projectSource(rigLayers: Raster[], srcr: Raster, frame: Frame, r
       for (let p = 0; p < W * H; p++) if (top.data[p] === 1 && rim.data[p] === 0) core.data[p] = 1;
     }
     const ok = newMask(W, H);
+    const refusedMask = newMask(W, H);
     let coreN = 0;
     let refused = 0;
     for (let p = 0; p < W * H; p++) {
       if (core.data[p] === 0) continue;
       coreN++;
       if (maxDiff(r.data, p * 4, srcr.data, p * 4) <= DRIFT_LIMIT) ok.data[p] = 1;
-      else refused++;
+      else {
+        refused++;
+        refusedMask.data[p] = 1;
+      }
     }
     const closed = morphClose(ok, CORE_KERNEL);
     const okf = newFloatImage(W, H, 1);
@@ -539,7 +553,7 @@ export function projectSource(rigLayers: Raster[], srcr: Raster, frame: Frame, r
         r.data[p * 4 + c] = Math.trunc(v < 0 ? 0 : v > 255 ? 255 : v);
       }
     }
-    return { core: coreN, taken, refused, clear, takenMask };
+    return { core: coreN, taken, refused, clear, takenMask, coreMask: core, refusedMask };
   });
 }
 
@@ -668,6 +682,8 @@ export function mergeBelowCrop(part: Raster, extras: Raster[], front: Mask, srcr
     const ring = newMask(part.width, part.height);
     merged = copied + growRim(part, sel, srcr, front, ring);
     if (trace !== undefined) {
+      trace.lastSel = sel;
+      trace.lastRing = ring;
       for (let p = 0; p < ring.data.length; p++) {
         if (ring.data[p] === 1) {
           trace.from[p] = e;
@@ -683,6 +699,13 @@ export function mergeBelowCrop(part: Raster, extras: Raster[], front: Mask, srcr
 export interface MergeTrace {
   from: Int32Array;
   ring: Mask;
+  /**
+   * The last entry's copied pixels and its ring: `merged_px` is their two
+   * counts added (the reference assigns per entry), so a cut splits it by
+   * where these lie. Absent when no entry ran.
+   */
+  lastSel?: Mask;
+  lastRing?: Mask;
 }
 
 export interface VisibilityCounts {
@@ -1385,28 +1408,119 @@ export function cutPatch(patch: Patch, srcr: Raster, silhouette: Mask | null): {
   return { record, image: crop(r, x0, y0, record.w, record.h) };
 }
 
+/** One place in the draw order: a plan part, a patch or a cut's new part, by its index in its list. */
+export type DrawSlot = { plan: number } | { patch: number } | { cut: number };
+
 /**
- * The draw order of plan parts and patches together, back to front: every
- * `"back"` patch in `patches` order, then each plan part preceded by the
- * patches drawn `{before: <that part>}` in `patches` order, then every
- * `"front"` patch in `patches` order. The loader has already refused a
- * `before` that names no plan part.
+ * The draw order of plan parts, patches and cuts together, back to front:
+ * every `"back"` patch in `patches` order, then every `"back"` cut in `cuts`
+ * order; then each plan part preceded by the patches drawn `{before: <that
+ * part>}` in `patches` order and then the cuts drawn so in `cuts` order; then
+ * every `"front"` patch, then every `"front"` cut. With no cuts it is the
+ * order of plan parts and patches it always was. The loader has already
+ * refused a `before` that names no plan part.
  */
-export function drawOrder(plan: readonly string[], patches: readonly Patch[]): Array<{ plan: number } | { patch: number }> {
-  const out: Array<{ plan: number } | { patch: number }> = [];
-  patches.forEach((q, i) => {
-    if (q.draw === 'back') out.push({ patch: i });
-  });
-  plan.forEach((name, pi) => {
+export function drawOrder(plan: readonly string[], patches: readonly Patch[], cuts: readonly Cut[] = []): DrawSlot[] {
+  const out: DrawSlot[] = [];
+  const place = (at: (draw: Patch['draw']) => boolean): void => {
     patches.forEach((q, i) => {
-      if (typeof q.draw === 'object' && q.draw.before === name) out.push({ patch: i });
+      if (at(q.draw)) out.push({ patch: i });
     });
+    cuts.forEach((q, i) => {
+      if (at(q.draw)) out.push({ cut: i });
+    });
+  };
+  place((d) => d === 'back');
+  plan.forEach((name, pi) => {
+    place((d) => typeof d === 'object' && d.before === name);
     out.push({ plan: pi });
   });
-  patches.forEach((q, i) => {
-    if (q.draw === 'front') out.push({ patch: i });
-  });
+  place((d) => d === 'front');
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// cuts — a plan part's pixels taken into a new part by a declared polygon
+// ---------------------------------------------------------------------------
+
+/**
+ * The rig pixels a polygon holds: pixel `(x, y)` is inside when its centre
+ * `(x + 0.5, y + 0.5)` is inside the polygon by the even-odd rule: on each
+ * row, the polygon's edges cross the centre line at sorted x, and the centres
+ * strictly between the first and second crossing, the third and fourth, …
+ * are inside. An edge crosses when exactly one of its ends lies below the
+ * line; the vertices are integers and the line is at a half, so no vertex
+ * lies on it and a horizontal edge never crosses. A centre exactly on a
+ * crossing is outside. Pure arithmetic on the declared integers: the same
+ * polygon holds the same pixels on every machine.
+ */
+export function pixelsInPolygon(polygon: ReadonlyArray<readonly [number, number]>, W: number, H: number): Mask {
+  const m = newMask(W, H);
+  const n = polygon.length;
+  for (let y = 0; y < H; y++) {
+    const cy = y + 0.5;
+    // The crossings of this row's centre line, sorted; pixels between pairs are inside.
+    const xs: number[] = [];
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const [xi, yi] = polygon[i];
+      const [xj, yj] = polygon[j];
+      if (yi > cy !== yj > cy) xs.push(xi + ((cy - yi) * (xj - xi)) / (yj - yi));
+    }
+    if (xs.length === 0) continue;
+    xs.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      // Centres x + 0.5 with xs[k] < x + 0.5 < xs[k + 1]; a centre exactly on a crossing is outside.
+      const from = Math.max(0, Math.floor(xs[k] - 0.5) + 1);
+      const to = Math.min(W - 1, Math.ceil(xs[k + 1] - 0.5) - 1);
+      for (let x = from; x <= to; x++) m.data[y * W + x] = 1;
+    }
+  }
+  return m;
+}
+
+/** What one cut did, counted when it was made: the from part's opaque pixels before, what it kept, what the cut took. */
+export interface CutCount {
+  from: string;
+  into: string;
+  /** The from part's `alpha > 8` pixels before any of its cuts. */
+  before: number;
+  /** What the from part kept after all its cuts; the same on every cut of one part. */
+  kept: number;
+  /** What this cut took. */
+  taken: number;
+  /** Of `taken`, the band the from part keeps as well (`cutBand`); counted in neither `kept` nor `before` twice. */
+  band: number;
+}
+
+/**
+ * The cut lines the assemble stage prints, one per plan part with cuts, in
+ * the `pixels:` line's shape: `  cut: "<from>" opaque <before> = "<from>"
+ * <kept> + "<into>" <taken> …`. Empty without cuts, so a config with none
+ * prints what it printed before.
+ */
+export function cutLines(cuts: readonly CutCount[]): string[] {
+  const byFrom = new Map<string, CutCount[]>();
+  for (const c of cuts) byFrom.set(c.from, [...(byFrom.get(c.from) ?? []), c]);
+  return [...byFrom.entries()].map(
+    ([from, cs]) => `  cut: "${from}" opaque ${cs[0].before} = "${from}" ${cs[0].kept} + ${cs.map((c) => `"${c.into}" ${c.taken}`).join(' + ')}; band ${cs.reduce((a, c) => a + c.band, 0)} px held by both`,
+  );
+}
+
+/**
+ * A cut's band (issue #170, `overlap`): the polygon's pixels within `overlap`
+ * rig px of its edge, distance read as Chebyshev distance — a pixel of the
+ * polygon is in the band when the `(2 * overlap + 1)`-square centred on it
+ * holds a pixel the polygon does not, i.e. the polygon's mask less its
+ * `erode` by that square (`cv2.erode`'s border: the rig's edge is not the
+ * polygon's edge). Empty at `overlap` 0. The base part keeps its pixels there
+ * as well as the piece, so the piece's resampled edge has art under it.
+ */
+export function cutBand(polygonMask: Mask, overlap: number): Mask {
+  const band = newMask(polygonMask.width, polygonMask.height);
+  if (overlap === 0) return band;
+  const inner = erode(polygonMask, 2 * overlap + 1);
+  for (let p = 0; p < band.data.length; p++) band.data[p] = polygonMask.data[p] === 1 && inner.data[p] === 0 ? 1 : 0;
+  return band;
 }
 
 // ---------------------------------------------------------------------------
@@ -1421,6 +1535,8 @@ export interface AssembleResult {
   /** `recompositeErrorMap`: uncovered error pixels red, covered ones blue, the painting dimmed grey. */
   errorMap: Raster;
   figures: RecompositeFigures;
+  /** What each `assemble.cuts` entry took, counted when it was made (`cutLines`); empty without cuts. */
+  cuts: CutCount[];
   seamRule: SeamRule;
   projectRule: ProjectRule;
 }
@@ -1464,7 +1580,7 @@ export function checkPlanAgainstRuns(plan: PlanEntry[], extend: Extend[], full: 
  * after this returned writes only after green.
  */
 export function assemble(input: AssembleInput): AssembleResult {
-  const { source, full, head, plan, extend, patches, seamRule, projectRule } = input;
+  const { source, full, head, plan, extend, patches, cuts, seamRule, projectRule } = input;
   const frame = checkGeometry(
     { sourceW: source.width, sourceH: source.height, resolution: input.resolution, headBox: input.headBox, rigScale: input.rigScale },
     { full, head },
@@ -1499,6 +1615,38 @@ export function assemble(input: AssembleInput): AssembleResult {
       });
     }
   });
+  // Cuts too: a polygon past the rig is in some other space (source pixels,
+  // most likely), and two cuts of one part that share a pixel would give it
+  // to both. Every pair is named.
+  const cutMasks = cuts.map((q) => pixelsInPolygon(q.polygon, W, H));
+  cuts.forEach((q, i) => {
+    const out = q.polygon.filter(([x, y]) => x > W || y > H);
+    if (out.length > 0) {
+      patchProblems.push({
+        code: 'ASSEMBLE_CUT_INSIDE',
+        object: `config.assemble.cuts[${i}] (part "${q.into}")`,
+        detail: `polygon point(s) ${out.map(([x, y]) => `[${x}, ${y}]`).join(', ')} lie past the ${W}x${H} rig (the painting times rig_scale ${frame.S}); x <= ${W} and y <= ${H} are required — the polygon is in rig pixels, the space of parts.json`,
+      });
+    }
+    for (let j = 0; j < i; j++) {
+      if (cuts[j].from !== q.from) continue;
+      let shared = 0;
+      let first = -1;
+      for (let p = 0; p < W * H; p++) {
+        if (cutMasks[i].data[p] === 1 && cutMasks[j].data[p] === 1) {
+          shared++;
+          if (first < 0) first = p;
+        }
+      }
+      if (shared > 0) {
+        patchProblems.push({
+          code: 'ASSEMBLE_CUT_OVERLAP',
+          object: `config.assemble.cuts[${i}] (part "${q.into}")`,
+          detail: `shares ${shared} rig pixel(s) with cuts[${j}] (part "${cuts[j].into}"), the first at ${first % W},${Math.floor(first / W)}; both cut "${q.from}", and a pixel goes to one part — polygons of one part that do not overlap are required`,
+        });
+      }
+    }
+  });
   refuseIfAny(patchProblems);
 
   interface Built {
@@ -1508,6 +1656,8 @@ export function assemble(input: AssembleInput): AssembleResult {
     extendKeys: string[];
     trace: MergeTrace;
     merged: number;
+    /** The rig pixels this piece of the layer owns when the layer is cut, null when it is not: the counts are split by it. */
+    region: Mask | null;
   }
   const built: Array<Built | null> = plan.map(() => null);
   const empty: Problem[] = [];
@@ -1558,7 +1708,7 @@ export function assemble(input: AssembleInput): AssembleResult {
       });
       return;
     }
-    built[pi] = { key, r, st, extendKeys, trace, merged };
+    built[pi] = { key, r, st, extendKeys, trace, merged, region: null };
   });
   const silhouette = seamRule === 'silhouette' || patches.some((q) => q.alpha === 'silhouette') ? figureSilhouette(srcr) : null;
   const cut = patches.map((q, i) => {
@@ -1572,29 +1722,131 @@ export function assemble(input: AssembleInput): AssembleResult {
     }
     return c;
   });
+
+  // The cuts (issue #170), after step 4 so a piece takes the merged pixels
+  // too: every pixel of the part with alpha above 0 whose centre a cut's
+  // polygon holds moves to that cut's piece, colour and alpha, and is cleared
+  // in the part. The polygons of one part are disjoint (refused above), so
+  // each pixel goes to exactly one piece, and the counts printed are taken
+  // here, before steps 4b and 5.
+  const count = (m: Mask | null, region: Mask): number => {
+    if (m === null) return 0;
+    let n = 0;
+    for (let p = 0; p < W * H; p++) if (m.data[p] === 1 && region.data[p] === 1) n++;
+    return n;
+  };
+  const opaqueOf = (r: Raster): number => {
+    let n = 0;
+    for (let p = 0; p < W * H; p++) if (r.data[p * 4 + 3] > OPAQUE_ALPHA_ABOVE) n++;
+    return n;
+  };
+  const mergedIn = (b: Built, region: Mask): number => count(b.trace.lastSel ?? null, region) + count(b.trace.lastRing ?? null, region);
+  const pieces: Array<Built | null> = cuts.map(() => null);
+  const cutCounts: CutCount[] = [];
+  plan.forEach(([name], pi) => {
+    const mine = cuts.map((q, i) => i).filter((i) => cuts[i].from === name);
+    const b = built[pi];
+    if (mine.length === 0 || b === null) return;
+    const before = opaqueOf(b.r);
+    const rest = newMask(W, H);
+    rest.data.fill(1);
+    // The base's own pixels: `rest`, and every cut's band, which it keeps as well as the piece.
+    const own = newMask(W, H);
+    const bands: number[] = [];
+    const taken = mine.map((i) => {
+      const m = cutMasks[i];
+      const band = cutBand(m, cuts[i].overlap);
+      const r = newRaster(W, H);
+      let n = 0;
+      let nb = 0;
+      for (let p = 0; p < W * H; p++) {
+        rest.data[p] &= 1 - m.data[p];
+        if (band.data[p] === 1) own.data[p] = 1;
+        const a = b.r.data[p * 4 + 3];
+        if (m.data[p] === 0 || a === 0) continue;
+        r.data.set(b.r.data.subarray(p * 4, p * 4 + 4), p * 4);
+        if (band.data[p] === 0) b.r.data.fill(0, p * 4, p * 4 + 4);
+        if (a > OPAQUE_ALPHA_ABOVE) {
+          n++;
+          if (band.data[p] === 1) nb++;
+        }
+      }
+      pieces[i] = { ...b, r, region: m, merged: mergedIn(b, m) };
+      bands.push(nb);
+      return n;
+    });
+    for (let p = 0; p < W * H; p++) if (rest.data[p] === 1) own.data[p] = 1;
+    const bandSum = bands.reduce((a, n) => a + n, 0);
+    // What the base kept of the strict partition; its image also holds the bands.
+    const kept = opaqueOf(b.r) - bandSum;
+    const sum = taken.reduce((a, n) => a + n, 0);
+    const object = `part "${name}" (${b.key}, config.assemble.plan[${pi}])`;
+    // By construction: the pieces partition the layer, so their counts add up to the layer's. A refusal here is a bug.
+    const split = [
+      ['opaque px', before, kept + sum],
+      ['merged_px', b.merged, mergedIn(b, rest) + mine.reduce((a, i) => a + (pieces[i] as Built).merged, 0)],
+      ['projected_core_px', b.st.core, count(b.st.coreMask, rest) + mine.reduce((a, i) => a + count(b.st.coreMask, cutMasks[i]), 0)],
+      ['source_px_taken', b.st.taken, count(b.st.takenMask, rest) + mine.reduce((a, i) => a + count(b.st.takenMask, cutMasks[i]), 0)],
+      ['refused_drift_px', b.st.refused, count(b.st.refusedMask, rest) + mine.reduce((a, i) => a + count(b.st.refusedMask, cutMasks[i]), 0)],
+    ] as const;
+    for (const [what, whole, parts] of split) {
+      if (whole !== parts) empty.push({ code: 'ASSEMBLE_COUNTS_ADD_UP', object, detail: `${what}: ${whole} before its cuts, ${parts} over the pieces; equal is required (a bug in the assembler, not in the inputs)` });
+    }
+    mine.forEach((i, k) => {
+      if (taken[k] === 0) {
+        empty.push({
+          code: 'ASSEMBLE_CUT_PIXELS',
+          object: `config.assemble.cuts[${i}] (part "${cuts[i].into}")`,
+          detail: `takes 0 of "${name}"'s ${before} opaque pixel(s) (alpha above ${OPAQUE_ALPHA_ABOVE}); its polygon holds ${count(cutMasks[i], cutMasks[i])} rig pixel(s) and none is that layer's art — a cut that takes at least one is required: draw the polygon over the art (parts/${name}.png, placed at its parts.json x, y, is the layer in rig pixels)`,
+        });
+      }
+    });
+    if (kept === 0) {
+      empty.push({
+        code: 'ASSEMBLE_CUT_PIXELS',
+        object,
+        detail: `keeps 0 of its ${before} opaque pixel(s): ${mine.map((i, k) => `cuts[${i}] ("${cuts[i].into}") takes ${taken[k]}`).join(', ')}; a part that keeps at least one is required — to move the whole layer, rename the plan part instead`,
+      });
+    }
+    b.region = own;
+    b.merged = mergedIn(b, own);
+    mine.forEach((i, k) => cutCounts.push({ from: name, into: cuts[i].into, before, kept, taken: taken[k], band: bands[k] }));
+  });
   refuseIfAny(empty);
+  // In cut order, as the config lists them.
+  cutCounts.sort((a, b) => cuts.findIndex((q) => q.into === a.into) - cuts.findIndex((q) => q.into === b.into));
   const order = drawOrder(
     plan.map((e) => e[0]),
     patches,
+    cuts,
   );
+  const pieceAt = (d: { plan: number } | { cut: number }): { name: string; b: Built } =>
+    'plan' in d ? { name: plan[d.plan][0], b: built[d.plan] as Built } : { name: cuts[d.cut].into, b: pieces[d.cut] as Built };
 
   // Step 4b: push back a fringe the painting shows another part through, over
   // the plan parts still uncropped and the patches, in draw order.
   const stack: PlacedPart[] = order.map((d) => {
     if ('patch' in d) return cut[d.patch] as PlacedPart;
-    const b = built[d.plan] as Built;
-    const whole: PartRecord = { name: plan[d.plan][0], from: b.key, x: 0, y: 0, w: W, h: H, opaque_px: 0, projected_core_px: 0, source_px_taken: 0, refused_drift_px: 0, merged_px: 0, seam_override_px: 0 };
+    const { name, b } = pieceAt(d);
+    const whole: PartRecord = { name, from: b.key, x: 0, y: 0, w: W, h: H, opaque_px: 0, projected_core_px: 0, source_px_taken: 0, refused_drift_px: 0, merged_px: 0, seam_override_px: 0 };
     return { record: whole, image: b.r };
   });
   const pushedBy = pushBackFringe(stack, srcr, seamRule, seamRule === 'silhouette' ? silhouette : null);
   const pushedOf: FringePushed[][] = plan.map(() => []);
+  const pushedOfCut: FringePushed[][] = cuts.map(() => []);
   order.forEach((d, i) => {
     if ('plan' in d) pushedOf[d.plan] = pushedBy[i];
+    if ('cut' in d) pushedOfCut[d.cut] = pushedBy[i];
   });
 
   const planned: Array<PlacedPart | null> = plan.map(() => null);
-  plan.forEach(([name], pi) => {
-    const { key, r, st, extendKeys, trace, merged } = built[pi] as Built;
+  const cutPlaced: Array<PlacedPart | null> = cuts.map(() => null);
+  const pieceList: Array<{ name: string; b: Built; pushed: FringePushed[]; at: string; set: (p: PlacedPart) => void }> = [
+    ...plan.map(([name], pi) => ({ name, b: built[pi] as Built, pushed: pushedOf[pi], at: `config.assemble.plan[${pi}]`, set: (q: PlacedPart) => (planned[pi] = q) })),
+    ...cuts.map((q, i) => ({ name: q.into, b: pieces[i] as Built, pushed: pushedOfCut[i], at: `config.assemble.cuts[${i}]`, set: (pp: PlacedPart) => (cutPlaced[i] = pp) })),
+  ];
+  pieceList.forEach(({ name, b, pushed: pushedHere, at, set }) => {
+    const { key, r, st, extendKeys, trace, merged, region } = b;
     // A pixel the merge wrote is judged in the extend layer's run, every other
     // in the part's own. Projected = the colour came from projectSource's
     // accepted set: the part layer's, or for a copied pixel the extend
@@ -1606,15 +1858,15 @@ export function assemble(input: AssembleInput): AssembleResult {
       const e = trace.from[p];
       const own = e < 0 ? st : (stats.get(extendKeys[e]) as ProjectionStats);
       if (r.data[p * 4 + 3] > OPAQUE_ALPHA_ABOVE && own.clear.data[p] === 1) visible.data[p] = 1;
-      if (trace.ring.data[p] === 0 && own.takenMask.data[p] === 1) projected.data[p] = 1;
+      if (trace.ring.data[p] === 0 && own.takenMask.data[p] === 1 && (region === null || region.data[p] === 1)) projected.data[p] = 1;
     }
     const { x0, y0, x1, y1, opaque } = measureBox(r);
     if (opaque === 0) {
-      const pushed = pushedOf[pi].reduce((a, q) => a + q.px, 0);
+      const pushed = pushedHere.reduce((a, q) => a + q.px, 0);
       empty.push({
         code: 'ASSEMBLE_PART_OPAQUE',
-        object: `part "${name}" (${key}, config.assemble.plan[${pi}])`,
-        detail: `has 0 pixels with alpha above ${OPAQUE_ALPHA_ABOVE} in the rig once its fringe is pushed back: every one of its pixels was below alpha ${CORE_ALPHA} where the painting shows another part (${pushed} px pushed back, held by ${pushedOf[pi].map((q) => `"${q.part}" ${q.px} px`).join(', ')}); a part with at least one opaque pixel is required — drop it from the plan or take the tag from the other run`,
+        object: `part "${name}" (${key}, ${at})`,
+        detail: `has 0 pixels with alpha above ${OPAQUE_ALPHA_ABOVE} in the rig once its fringe is pushed back: every one of its pixels was below alpha ${CORE_ALPHA} where the painting shows another part (${pushed} px pushed back, held by ${pushedHere.map((q) => `"${q.part}" ${q.px} px`).join(', ')}); a part with at least one opaque pixel is required — drop it from the plan or take the tag from the other run`,
       });
       return;
     }
@@ -1629,18 +1881,18 @@ export function assemble(input: AssembleInput): AssembleResult {
       opaque_px: opaque,
       visible_px: vc.visible_px,
       occluded_px: vc.occluded_px,
-      projected_core_px: st.core,
-      source_px_taken: st.taken,
+      projected_core_px: region === null ? st.core : count(st.coreMask, region),
+      source_px_taken: region === null ? st.taken : count(st.takenMask, region),
       visible_not_projected_px: vc.visible_not_projected_px,
-      refused_drift_px: st.refused,
+      refused_drift_px: region === null ? st.refused : count(st.refusedMask, region),
       merged_px: merged,
       seam_override_px: 0,
     };
-    if (pushedOf[pi].length > 0) record.fringe_pushed_back = pushedOf[pi];
-    planned[pi] = { record, image: crop(r, x0, y0, record.w, record.h) };
+    if (pushedHere.length > 0) record.fringe_pushed_back = pushedHere;
+    set({ record, image: crop(r, x0, y0, record.w, record.h) });
   });
   refuseIfAny(empty);
-  const placed: PlacedPart[] = order.map((d) => ('plan' in d ? planned[d.plan] : cut[d.patch]) as PlacedPart);
+  const placed: PlacedPart[] = order.map((d) => ('plan' in d ? planned[d.plan] : 'cut' in d ? cutPlaced[d.cut] : cut[d.patch]) as PlacedPart);
 
   seamOverride(placed, srcr, seamRule, seamRule === 'silhouette' ? silhouette : null);
   const can = recomposite(placed, W, H);
@@ -1651,6 +1903,7 @@ export function assemble(input: AssembleInput): AssembleResult {
     recomposite: can,
     errorMap: recompositeErrorMap(can, srcr, placed),
     figures,
+    cuts: cutCounts,
     seamRule,
     projectRule,
   };
@@ -1834,7 +2087,7 @@ export function proposePlan(full: LayerSet, head: LayerSet, g: Geometry, minPx =
 
 /**
  * The config fields the stage reads: `seethrough.resolution` and `.head_box`,
- * `assemble.rig_scale`, `.plan`, `.extend_below_crop` and `.patches` — and
+ * `assemble.rig_scale`, `.plan`, `.extend_below_crop`, `.patches` and `.cuts` — and
  * nothing of the rig. The CLI hands it a config from
  * `parseEarlyConfig(raw, 'assemble')`; a config the full loader accepted is
  * the same shape with more in it. The head box is refused here rather than by
@@ -1848,6 +2101,7 @@ export function stageFields(cfg: Pick<CharacterConfig, 'seethrough' | 'assemble'
   plan: PlanEntry[];
   extend: Extend[];
   patches: Patch[];
+  cuts: Cut[];
 } {
   const problems: Problem[] = [];
   if (cfg.seethrough === undefined) {
@@ -1864,6 +2118,7 @@ export function stageFields(cfg: Pick<CharacterConfig, 'seethrough' | 'assemble'
     plan: cfg.assemble.plan,
     extend: cfg.assemble.extend_below_crop ?? [],
     patches: cfg.assemble.patches ?? [],
+    cuts: cfg.assemble.cuts ?? [],
   };
 }
 
