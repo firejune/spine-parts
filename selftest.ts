@@ -146,6 +146,7 @@ import {
   stageFields,
   visibilityCounts,
 } from './src/assemble.ts';
+import { maxRgbDiff, withoutPhysics } from './src/check.ts';
 import { BARS, blackRig, buildGateLines, causeLines, chainLine, measuredRules, SOURCE_LINE, sourceFigures, sourceSizeProblem, packedBuildArgs, DEFAULT_PACK_MODE, DEFAULT_PAGE_EDGES, findRigc, type PackMode, type PageEdges, type FrameSet, GEOMETRY_FILE, gateGreen, headBoneOf, IDLE_MAX_PX, type JudgementLine, JUDGEMENT_LINES, packEdgeProblems, PARTS_HOME_SENTENCE, parsePackLines, readBoneTrack, readCheckInputs, readFrameSet, readGeometry, readRigcEntry, REPORTED_LINES, requireRigcVersion, RIGC_ENTRY_VERSION, RIGC_GEOMETRY_VERSION, rigcFailed, type RigcRunner, runCheck, SPINEBOY_YARDSTICK, stretchLine, TEXTURE_STRETCH_CEILING, TIP_RATIO_FLOOR, attachmentPoses, stillLine, STILL_INSTRUMENT } from './src/check.ts';
 import { blinkFigures, type BoneWorld, frameBox, halfTravels, lagStep, readSine, setupToFrame, stillReading, stillTolerance, STILL_ROUNDINGS, ulpOf } from './src/instruments.ts';
 import {
@@ -6564,6 +6565,94 @@ function runCheckSuite(): number {
       'the gate cannot see a loop that jumps — it passes it — so the loop check is the only thing between that idle and a README; the setup pose is unchanged, so the seam must stay quiet',
     );
 
+    // Issue #183: CHECK_LOOP_CLOSES reads the keyed loop. The front part hung on a bone `bob` at the root's origin
+    // (so its art sits where it did) with a physics constraint on bob's x: the idle slides the root and bob lags it,
+    // so the render — physics reset at frame 0 and stepped — ends where the keys do not say.
+    const BOB_PHYSICS = { type: 'physics', name: 'bob_phys', bone: 'bob', x: 1, inertia: 0.5, strength: 100, damping: 0.85, mass: 1, mix: 1 };
+    const withPhysics = (d: string): void => {
+      const r = JSON.parse(readFileSync(join(d, 'rig.json'), 'utf8')) as { bones: unknown[]; slots: Array<{ bone: string }>; constraints?: unknown[] };
+      r.bones.push({ name: 'bob', parent: 'root', x: 0, y: 0 });
+      r.slots[1].bone = 'bob';
+      r.constraints = [BOB_PHYSICS];
+      writeFileSync(join(d, 'rig.json'), `${JSON.stringify(r, null, 2)}\n`);
+    };
+    const idleEnds = (d: string): number | null => {
+      if (!existsSync(join(d, 'idle_frames', 'frames.json'))) return null;
+      const set = readFrameSet(join(d, 'idle_frames'));
+      return maxRgbDiff(set.frames[0].image, set.frames[set.frames.length - 1].image).max;
+    };
+    const physLine = '  loop physics: 1 physics constraint(s) left out of the loop\'s frames, reported, not judged — "bob_phys" on bone "bob" (rig.json)';
+
+    const openPhys = join(dir, 'loop-phys');
+    writeCheckRig(openPhys, { lastKey: IDLE_PEAK + 1 });
+    withPhysics(openPhys);
+    const op = runCli(['check', '--rig', openPhys, '--out', join(dir, 'loop-phys-out')]);
+    const opf = readJsonFile(join(dir, 'loop-phys-out', 'check.json'));
+    const opl = failLine(op.out, 'CHECK_LOOP_CLOSES');
+    say(
+      'CH14_A_KEYED_LOOP_THAT_DOES_NOT_CLOSE_STILL_FAILS_WITH_A_PHYSICS_CONSTRAINT_PRESENT',
+      op.status === 1 &&
+        opl !== null &&
+        opl.includes(', its physics constraint(s) left out') &&
+        opf !== null &&
+        typeof opf.loop_max_diff === 'number' &&
+        opf.loop_max_diff > 0 &&
+        lf !== null &&
+        opf.loop_max_diff === lf.loop_max_diff &&
+        op.out.includes(physLine) &&
+        !existsSync(join(dir, 'loop-phys-out', '_loop')),
+      `exit ${op.status}; ${opl?.trim() ?? 'no CHECK_LOOP_CLOSES line'}; check.json loop_max_diff ${String(opf?.loop_max_diff)} (CK03's rig, the same keys with no bob and no constraint: ${String(lf?.loop_max_diff)})`,
+      'leaving physics out of the comparison must not leave the keys out of it: the idle whose last key is not its first fails with the constraint present, by the same figure as the same keys without the bone and the constraint (bob at the root\'s origin moves the art nowhere), and the refusal says the constraint was left out',
+    );
+
+    const closedPhys = join(dir, 'phys');
+    writeCheckRig(closedPhys);
+    withPhysics(closedPhys);
+    const cp = runCli(['check', '--rig', closedPhys, '--out', join(dir, 'phys-out')]);
+    const cpf = readJsonFile(join(dir, 'phys-out', 'check.json'));
+    const withSim = idleEnds(join(dir, 'phys-out'));
+    say(
+      'CH15_PHYSICS_ON_A_CLOSED_KEYED_LOOP_PASSES_AND_IS_REPORTED_ON_ITS_OWN_LINE',
+      cp.status === 0 &&
+        cp.out.includes('check: PASS') &&
+        failLine(cp.out, 'CHECK_LOOP_CLOSES') === null &&
+        cpf !== null &&
+        cpf.loop_max_diff === 0 &&
+        JSON.stringify(cpf.loop_physics) === '[{"name":"bob_phys","bone":"bob","in":"rig.json"}]' &&
+        Object.keys(cpf).join(',') === [...CHECK_KEYS.slice(0, 4), 'loop_physics', ...CHECK_KEYS.slice(4)].join(',') &&
+        cp.out.split('\n').filter((l) => l.startsWith('  loop physics: ')).length === 1 &&
+        cp.out.includes(physLine) &&
+        withSim !== null &&
+        withSim > 0,
+      `exit ${cp.status}; ${cp.out.split('\n').find((l) => l.startsWith('  loop physics: '))?.trim() ?? 'no loop physics line'}; check.json loop_max_diff ${String(cpf?.loop_max_diff)}, loop_physics ${JSON.stringify(cpf?.loop_physics ?? null)}; the idle as rendered with the constraint (idle_frames/) f0000 vs its last frame: max |d| ${withSim ?? 'not read'}/255`,
+      'the keys close, and the render with the constraint does not (the witness: idle_frames/ is rendered with it, and its ends differ), which is what the loop bar refused before issue #183; the constraint is named with its bone on one line and in check.json beside the figure it was left out of, and judged by nothing',
+    );
+
+    const plain = withoutPhysics(JSON.parse(readFileSync(join(rig, 'rig.json'), 'utf8')) as Record<string, unknown>, JSON.parse(readFileSync(join(rig, 'motion.json'), 'utf8')) as Record<string, unknown>);
+    const ownEnds = idleEnds(out);
+    const plantedPhys = withoutPhysics(
+      {
+        constraints: [{ type: 'ik', name: 'aim', bones: ['a'], target: 't' }, { type: 'physics', name: 'p1', bone: 'a' }],
+        skins: { default: { attachments: {}, physics: ['p1'] }, plain: { s: {} } },
+      },
+      { physics: { p2: { bone: 'b' } }, animations: { idle: { duration: 1, tracks: [{ bone: 'a', property: 'rotate', keys: [] }, { physics: 'p2', property: 'mix', keys: [] }] } } },
+    );
+    say(
+      'CH16_A_RIG_WITHOUT_PHYSICS_IS_MEASURED_OFF_ITS_OWN_IDLE_RENDER_AND_EVERY_PHYSICS_DECLARATION_IS_LEFT_OUT_OF_A_RIG_WITH_ONE',
+      plain === null &&
+        fig !== null &&
+        !('loop_physics' in fig) &&
+        ownEnds !== null &&
+        fig.loop_max_diff === ownEnds &&
+        !ok.out.includes('loop physics') &&
+        plantedPhys !== null &&
+        JSON.stringify(plantedPhys.physics) === '[{"name":"p1","bone":"a","in":"rig.json"},{"name":"p2","bone":"b","in":"motion.json"}]' &&
+        JSON.stringify(plantedPhys.rig) === '{"constraints":[{"type":"ik","name":"aim","bones":["a"],"target":"t"}],"skins":{"default":{"attachments":{}},"plain":{"s":{}}}}' &&
+        JSON.stringify(plantedPhys.motion) === '{"animations":{"idle":{"duration":1,"tracks":[{"bone":"a","property":"rotate","keys":[]}]}}}',
+      `CK01's rig: withoutPhysics ${plain === null ? 'null' : 'NOT NULL'}; check.json loop_physics ${fig !== null && 'loop_physics' in fig ? 'WRITTEN' : 'absent'}; loop_max_diff ${String(fig?.loop_max_diff)} against its own idle_frames/ ends ${ownEnds ?? 'not read'}; planted (a physics constraint in rig.json listed by a skin, one in motion.json keyed by a track, beside an ik): left out ${JSON.stringify(plantedPhys?.physics ?? null)}; rig ${JSON.stringify(plantedPhys?.rig ?? null)}; motion ${JSON.stringify(plantedPhys?.motion ?? null)}`,
+      'a rig with no physics constraint is measured as it always was — no second build, the figure the idle render\'s own ends, no key added to check.json, no line — and a rig with one has every declaration rig-c reads left out (rig.json constraints, motion.json\'s table) with what only activates or keys them (a skin\'s list, a physics track), and nothing else: the ik stays',
+    );
+
     const seamRig = join(dir, 'seam');
     writeCheckRig(seamRig);
     writeFileSync(join(seamRig, 'parts', `${CHECK_PARTS[0].name}.png`), encodePngBytes(shiftRight(checkPartRaster(CHECK_PARTS[0]), 3)));
@@ -9013,9 +9102,9 @@ function runBuildSuite(): number {
     // Issue #92 through the whole build: BU09's hanging skirt with a scene target under root and a
     // transform constraint holding the chest at the target's world rotation (0, which is the chest's
     // own: the pose does not move), carrying a record and a note; the same without them; and a field
-    // rigc does not read. A physics constraint on the swinging link builds green too, and check then
-    // fails CHECK_LOOP_CLOSES (75/255 at t = 1 s, measured): physics carries state from one frame to
-    // the next, so the idle's last frame is not its first — check's bar, not this card's.
+    // rigc does not read. A physics constraint on the swinging link builds green too; check failed it on
+    // CHECK_LOOP_CLOSES (75/255 at t = 1 s, measured) until issue #183, which reads the loop with every
+    // physics constraint left out (CH14-CH16): physics carries state from one frame to the next.
     const sceneCfg = (constraint: Record<string, unknown>): Record<string, unknown> => {
       const c = JSON.parse(JSON.stringify(hang)) as Record<string, unknown>;
       c.bones = [...(c.bones as unknown[]), { name: 'tgt', parent: 'root', at: [skirtBox.x + skirtBox.w, skirtBox.y + skirtBox.h] }];

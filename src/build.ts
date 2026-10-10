@@ -875,6 +875,7 @@ export function checkStage(input: CheckStageInput, rigc: RigcRunner, bin: string
   const fig = r.figures;
   if (r.idle === null) log(`  loop: SKIP — ${fig.skipped?.loop ?? ''}`);
   else log(`  loop: idle ${r.idle.frames} frame(s) at ${r.idle.fps} fps, f0000 vs f${String(r.idle.lastIndex).padStart(4, '0')} (t = ${r.idle.duration}s): max |d| ${fig.loop_max_diff} (0 required)`);
+  if (r.loopPhysics !== null) log(`  ${r.loopPhysics}`);
   if (r.seamViewport === null || fig.seam_mean === null) log(`  seam: SKIP — ${fig.skipped?.seam ?? ''}`);
   else {
     log(

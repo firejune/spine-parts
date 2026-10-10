@@ -920,6 +920,70 @@ export function readFrameSet(path: string): FrameSet {
 }
 
 // ---------------------------------------------------------------------------
+// the keyed loop: physics left out (issue #183)
+// ---------------------------------------------------------------------------
+
+/** A physics constraint the loop's frames leave out, as the `loop:` physics line names it. */
+export interface LoopPhysics {
+  name: string;
+  bone: string;
+  /** Where it was declared: rig.json's `constraints`, or motion.json's `physics` table. */
+  in: 'rig.json' | 'motion.json';
+}
+
+/**
+ * The rig spec and motion spec with every physics constraint left out, and
+ * the constraints it left out; null when there is none, so a rig without one
+ * is measured from the very build and render it always was.
+ *
+ * rig-c's render resets physics at frame 0 and steps it by 1/fps (its
+ * `spinePoser`), so a constraint still moving at the idle's duration makes
+ * the last frame differ from the first by what the simulation is doing, not by
+ * what the keys say. `CHECK_LOOP_CLOSES` measures the keys: a rig-c
+ * `constraints` entry of `type` `"physics"` and every entry of motion.json's
+ * `physics` table are dropped, with what names them only to activate or key
+ * them — a skin's `physics` list, and an animation track whose target is a
+ * `physics` constraint. Nothing else is touched, and nothing here judges the
+ * constraints: the line that names them reports.
+ */
+export function withoutPhysics(rig: Record<string, unknown>, motion: Record<string, unknown>): { rig: Record<string, unknown>; motion: Record<string, unknown>; physics: LoopPhysics[] } | null {
+  const physics: LoopPhysics[] = [];
+  const constraints = Array.isArray(rig.constraints) ? rig.constraints : null;
+  if (constraints !== null) {
+    for (const c of constraints) if (isRecord(c) && c.type === 'physics') physics.push({ name: String(c.name), bone: String(c.bone), in: 'rig.json' });
+  }
+  const table = isRecord(motion.physics) ? motion.physics : null;
+  if (table !== null) for (const [name, e] of Object.entries(table)) physics.push({ name, bone: isRecord(e) ? String(e.bone) : '', in: 'motion.json' });
+  if (physics.length === 0) return null;
+  const r: Record<string, unknown> = { ...rig };
+  if (constraints !== null) {
+    const kept = constraints.filter((c) => !(isRecord(c) && c.type === 'physics'));
+    if (kept.length > 0) r.constraints = kept;
+    else delete r.constraints;
+  }
+  if (isRecord(rig.skins)) {
+    r.skins = Object.fromEntries(Object.entries(rig.skins).map(([skin, entry]) => {
+      if (!isRecord(entry) || !('physics' in entry)) return [skin, entry];
+      return [skin, Object.fromEntries(Object.entries(entry).filter(([k]) => k !== 'physics'))];
+    }));
+  }
+  const m: Record<string, unknown> = { ...motion };
+  delete m.physics;
+  if (isRecord(motion.animations)) {
+    m.animations = Object.fromEntries(Object.entries(motion.animations).map(([name, a]) => {
+      if (!isRecord(a) || !Array.isArray(a.tracks)) return [name, a];
+      return [name, { ...a, tracks: a.tracks.filter((t) => !(isRecord(t) && 'physics' in t)) }];
+    }));
+  }
+  return { rig: r, motion: m, physics };
+}
+
+/** The one line naming what {@link withoutPhysics} left out of the loop's frames: reported, not judged. */
+export function loopPhysicsLine(physics: readonly LoopPhysics[]): string {
+  return `loop physics: ${physics.length} physics constraint(s) left out of the loop's frames, reported, not judged — ${physics.map((p) => `"${p.name}" on bone "${p.bone}" (${p.in})`).join(', ')}`;
+}
+
+// ---------------------------------------------------------------------------
 // pixel measurements
 // ---------------------------------------------------------------------------
 
@@ -1188,6 +1252,12 @@ export interface CheckFigures {
   pack_mode: { page_edges: PageEdges; pack_shape: PackShape };
   /** Null when the rig has no idle (issue #77); `skipped.loop` then says why. */
   loop_max_diff: number | null;
+  /**
+   * Written only when the rig declares a physics constraint (issue #183):
+   * each one {@link withoutPhysics} left out of the frames `loop_max_diff` was
+   * read from. Reported, not judged; a rig without one writes the keys it always wrote.
+   */
+  loop_physics?: LoopPhysics[];
   /** The three seam figures: null when there is no parts.json (issue #77); `skipped.seam` then says why. */
   seam_mean: number | null;
   seam_px_over_40: number | null;
@@ -1232,6 +1302,8 @@ export interface CheckReport {
   packOpaque: Array<{ page: string; share: number }>;
   /** Null when the rig has no idle. */
   idle: { frames: number; fps: number; duration: number; lastIndex: number; loopAt: { x: number; y: number } } | null;
+  /** The physics line ({@link loopPhysicsLine}); null when the rig declares no physics constraint or has no idle. */
+  loopPhysics: string | null;
   /** The setup-pose still's grid; null when nothing read the still (no parts.json and no `--source`). */
   seamViewport: Viewport | null;
   /** Every bar in {@link BARS} that measured, and every one that did not with its reason. */
@@ -1323,7 +1395,8 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
   const idleDir = join(out, 'idle_frames');
   const stillDir = join(out, '_still');
   const isoDir = join(out, '_isolated');
-  for (const d of [buildDir, idleDir, stillDir, isoDir]) rmSync(d, { recursive: true, force: true });
+  const loopDir = join(out, '_loop');
+  for (const d of [buildDir, idleDir, stillDir, isoDir, loopDir]) rmSync(d, { recursive: true, force: true });
   const written: string[] = [];
   const write = (name: string, data: string): void => {
     writeFileSync(join(out, name), data);
@@ -1352,6 +1425,8 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
   // 3. the idle, the loop, the heat — only when there is an idle
   let idle: FrameSet | null = null;
   let loop: { max: number; x: number; y: number } | null = null;
+  let loopSet: FrameSet | null = null;
+  let loopPhysics: LoopPhysics[] | null = null;
   if (inp.idleDuration !== null) {
     const render = rigc(['render', '--candidate', buildDir, '--animation', 'idle', '--fps', String(IDLE_FPS), '--max', String(IDLE_MAX_PX), '--geometry', '--out', idleDir]);
     if (render.status !== 0) refuseIfAny(rigcFailed('render --animation idle --geometry', render, render.out.split('\n').filter((l) => l.includes('FAIL') || l.includes('rigc:'))));
@@ -1372,6 +1447,39 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
       written.push('contact.png');
     }
     loop = maxRgbDiff(idle.frames[0].image, last.image);
+    loopSet = idle;
+    // The keyed loop (issue #183): with a physics constraint, the same rig and motion with every one left out, built
+    // the same way and rendered the same way, is what frame 0 and the frame at the duration are read from.
+    const stripped = withoutPhysics(inp.rig, inp.motion);
+    if (stripped !== null) {
+      loopPhysics = stripped.physics;
+      try {
+        mkdirSync(loopDir, { recursive: true });
+        const images = typeof inp.rig.images === 'string' ? resolve(inp.rigDir, inp.rig.images) : inp.rig.images;
+        writeFileSync(join(loopDir, 'rig.json'), JSON.stringify({ ...stripped.rig, images }));
+        writeFileSync(join(loopDir, 'motion.json'), JSON.stringify(stripped.motion));
+        const what = 'the idle with its physics constraint(s) left out';
+        const lb = rigc(['build', '--rig', join(loopDir, 'rig.json'), '--motion', join(loopDir, 'motion.json'), '--out', join(loopDir, 'build'), ...packedBuildArgs(mode)]);
+        if (lb.status !== 0) refuseIfAny(rigcFailed(`${packedBuildLabel(mode)} (${what})`, lb, buildGateLines(lb.out)));
+        const lr = rigc(['render', '--candidate', join(loopDir, 'build'), '--animation', 'idle', '--fps', String(IDLE_FPS), '--max', String(IDLE_MAX_PX), '--out', join(loopDir, 'frames')]);
+        if (lr.status !== 0) refuseIfAny(rigcFailed(`render --animation idle (${what})`, lr, lr.out.split('\n').filter((l) => l.includes('FAIL') || l.includes('rigc:'))));
+        const kept = readFrameSet(join(loopDir, 'frames'));
+        const keptLast = kept.frames[kept.frames.length - 1];
+        if (kept.stride !== 1 || kept.written !== kept.sampled || keptLast.index !== last.index) {
+          refuseIfAny([
+            {
+              code: 'CHECK_LOOP_LAST_FRAME_AT_DURATION',
+              object: `idle frame ${keptLast.name} (${what})`,
+              detail: `rigc sampled ${kept.sampled} frame(s), wrote ${kept.written} at stride ${kept.stride}; the idle as written ends at ${last.name}, and the loop compares frame 0 with that frame`,
+            },
+          ]);
+        }
+        loop = maxRgbDiff(kept.frames[0].image, keptLast.image);
+        loopSet = kept;
+      } finally {
+        rmSync(loopDir, { recursive: true, force: true });
+      }
+    }
     const idleImages = idle.frames.map((f) => f.image);
     writePng(join(out, 'motion_heat.png'), motionHeat(idleImages));
     written.push('motion_heat.png');
@@ -1491,6 +1599,7 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
     rigc_entry: rigcEntry,
     pack_mode: { page_edges: mode.pageEdges, pack_shape: mode.packShape },
     loop_max_diff: loop === null ? null : loop.max,
+    ...(loopPhysics === null ? {} : { loop_physics: loopPhysics }),
     seam_mean: seam === null ? null : round3(seam.mean),
     seam_px_over_40: seam === null ? null : seam.over40,
     seam_px_over_80: seam === null ? null : seam.over80,
@@ -1508,12 +1617,12 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
   };
   const barProblems: Problem[] = [];
   if (!htmlGreen) barProblems.push(...rigcFailed(packedBuildLabel(mode), build, gateHtml));
-  if (loop !== null && idle !== null && loop.max !== LOOP_MAX_BAR) {
+  if (loop !== null && idle !== null && loopSet !== null && loop.max !== LOOP_MAX_BAR) {
     const last = idle.frames[idle.frames.length - 1];
     barProblems.push({
       code: 'CHECK_LOOP_CLOSES',
-      object: `idle frame f0000.png vs ${last.name} (t = ${idle.duration}s)`,
-      detail: `max |d| ${loop.max}/255, first at pixel ${loop.x},${loop.y} of ${idle.viewport.pixelWidth}x${idle.viewport.pixelHeight}; ${LOOP_MAX_BAR} is required — the idle's last key must equal its first`,
+      object: `idle frame f0000.png vs ${last.name} (t = ${idle.duration}s)${loopPhysics === null ? '' : ', its physics constraint(s) left out'}`,
+      detail: `max |d| ${loop.max}/255, first at pixel ${loop.x},${loop.y} of ${loopSet.viewport.pixelWidth}x${loopSet.viewport.pixelHeight}; ${LOOP_MAX_BAR} is required — the idle's last key must equal its first`,
     });
   }
   if (figures.seam_mean !== null && figures.seam_px_over_40 !== null && (figures.seam_mean > SEAM_MEAN_BAR || figures.seam_px_over_40 > SEAM_PX_BAR)) {
@@ -1546,6 +1655,7 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
     pack,
     packOpaque,
     idle: idle === null || loop === null ? null : { frames: idle.frames.length, fps: idle.fps, duration: idle.duration, lastIndex: idle.frames[idle.frames.length - 1].index, loopAt: { x: loop.x, y: loop.y } },
+    loopPhysics: loopPhysics === null ? null : loopPhysicsLine(loopPhysics),
     seamViewport,
     bars,
     problems,
