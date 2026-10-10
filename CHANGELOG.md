@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.0](https://github.com/firejune/rig-parts/compare/v1.2.0...v1.3.0) (2026-10-10)
+
+
+### Features
+
+* **assemble:** cut a plan part's layer into a new part by a declared polygon ([#192](https://github.com/firejune/rig-parts/issues/192)) ([80fa416](https://github.com/firejune/rig-parts/commit/80fa4167435524c3da1d71707c42ec758892e16c))
+* **examples:** prepare the sample rig for a bust and a hip jiggle ([#187](https://github.com/firejune/rig-parts/issues/187)) ([0ac6f31](https://github.com/firejune/rig-parts/commit/0ac6f31c409c10d43ab5c92b1065bca6d9711fbd))
+* **mesh:** ribs along a chain — a row of vertices across the part at each link joint and at declared stations, in the contour and automatic modes ([#194](https://github.com/firejune/rig-parts/issues/194)) ([57ebabd](https://github.com/firejune/rig-parts/commit/57ebabdd87cf37292db32f226da9670726b98282))
+* **scene:** carry a character's named animations through compose, and show sample's jiggle in a hop ([#195](https://github.com/firejune/rig-parts/issues/195)) ([6fcf3ea](https://github.com/firejune/rig-parts/commit/6fcf3ea90c5b00592b682435aeafd76a28635620))
+
+
+### Bug Fixes
+
+* **docs:** say how expressions and a jiggle are built on top of the rig ([#191](https://github.com/firejune/rig-parts/issues/191)) ([c69bd46](https://github.com/firejune/rig-parts/commit/c69bd46ba55bb2cf0ebadae08c65544583166a5f))
+
 ## [1.2.0](https://github.com/firejune/rig-parts/compare/v1.1.1...v1.2.0) (2026-10-10)
 
 
