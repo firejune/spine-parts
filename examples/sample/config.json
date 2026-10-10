@@ -165,11 +165,27 @@
       ]
     },
     {
+      "name": "hip_jiggle",
+      "parent": "hip",
+      "at": [
+        419,
+        520
+      ]
+    },
+    {
       "name": "chest",
       "parent": "hip",
       "at": [
         419,
         350
+      ]
+    },
+    {
+      "name": "chest_jiggle",
+      "parent": "chest",
+      "at": [
+        419,
+        320
       ]
     },
     {
@@ -492,7 +508,24 @@
       ]
     },
     "topwear": {
-      "grid": 18,
+      "contour": {
+        "tolerance": 1,
+        "margin": 1,
+        "spacing": 18,
+        "stray": 4,
+        "regions": [
+          {
+            "name": "bust",
+            "shape": "circle",
+            "cx": 419,
+            "cy": 320,
+            "r": 28,
+            "bone": "chest_jiggle",
+            "spacing": 6,
+            "band": 16
+          }
+        ]
+      },
       "r": 8,
       "segments": [
         [
@@ -520,7 +553,34 @@
       ]
     },
     "bottomwear": {
-      "grid": 28,
+      "contour": {
+        "tolerance": 1,
+        "margin": 1,
+        "spacing": 28,
+        "stray": 4,
+        "regions": [
+          {
+            "name": "hip_r",
+            "shape": "circle",
+            "cx": 335,
+            "cy": 520,
+            "r": 30,
+            "bone": "hip_jiggle",
+            "spacing": 8,
+            "band": 12
+          },
+          {
+            "name": "hip_l",
+            "shape": "circle",
+            "cx": 503,
+            "cy": 520,
+            "r": 30,
+            "bone": "hip_jiggle",
+            "spacing": 8,
+            "band": 12
+          }
+        ]
+      },
       "r": 12,
       "segments": [
         [
@@ -706,5 +766,31 @@
       "squash": 0.12,
       "brow_drop": 1.2
     }
-  }
+  },
+  "constraints": [
+    {
+      "type": "physics",
+      "name": "bust_phys",
+      "bone": "chest_jiggle",
+      "x": 0.5,
+      "y": 1,
+      "inertia": 0.5,
+      "strength": 100,
+      "damping": 0.85,
+      "mass": 1,
+      "mix": 1
+    },
+    {
+      "type": "physics",
+      "name": "hip_phys",
+      "bone": "hip_jiggle",
+      "x": 0.5,
+      "y": 1,
+      "inertia": 0.5,
+      "strength": 100,
+      "damping": 0.85,
+      "mass": 1,
+      "mix": 1
+    }
+  ]
 }

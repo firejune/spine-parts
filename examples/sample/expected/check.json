@@ -9,7 +9,19 @@
   "pack_shape": "polygon"
  },
  "loop_max_diff": 0,
- "seam_mean": 0.207,
+ "loop_physics": [
+  {
+   "name": "bust_phys",
+   "bone": "chest_jiggle",
+   "in": "rig.json"
+  },
+  {
+   "name": "hip_phys",
+   "bone": "hip_jiggle",
+   "in": "rig.json"
+  }
+ ],
+ "seam_mean": 0.208,
  "seam_px_over_40": 0,
  "seam_px_over_80": 0,
  "BREATH_VISIBLE": {
@@ -17,7 +29,7 @@
   "torso_parts": [
    "topwear"
   ],
-  "torso_heat_mean": 7.717,
+  "torso_heat_mean": 7.8,
   "torso_floor": 3.809,
   "feet_parts": [
    "shoes"
@@ -88,9 +100,9 @@
   "parts": [
    {
     "part": "bottomwear",
-    "root_rig_px": 0.524,
-    "tip_rig_px": 2.596,
-    "ratio": 4.956
+    "root_rig_px": 0.486,
+    "tip_rig_px": 2.62,
+    "ratio": 5.393
    },
    {
     "part": "sleeves",
@@ -162,7 +174,7 @@
  "TEXTURE_STRETCH": {
   "status": "PASS",
   "meshes": 6,
-  "triangles": 1336,
+  "triangles": 1908,
   "frames": 49,
   "severity": 1.227,
   "severity_ceiling": 1.926544,
@@ -204,12 +216,12 @@
    },
    {
     "slot": "bottomwear",
-    "triangles": 324,
-    "max_ratio": 1.066,
-    "max_at": "triangle 4 (vertices 2 58 3), edge 58-3, idle frame 12",
-    "min_ratio": 0.973,
-    "min_at": "triangle 315 (vertices 187 32 31), edge 32-31, idle frame 19",
-    "severity": 1.066
+    "triangles": 570,
+    "max_ratio": 1.054,
+    "max_at": "triangle 90 (vertices 52 54 53), edge 53-52, idle frame 38",
+    "min_ratio": 0.949,
+    "min_at": "triangle 90 (vertices 52 54 53), edge 53-52, idle frame 14",
+    "severity": 1.054
    },
    {
     "slot": "sleeves",
@@ -222,11 +234,11 @@
    },
    {
     "slot": "topwear",
-    "triangles": 242,
+    "triangles": 568,
     "max_ratio": 1.048,
-    "max_at": "triangle 205 (vertices 131 137 138), edge 138-131, idle frame 12",
-    "min_ratio": 0.994,
-    "min_at": "triangle 234 (vertices 143 29 144), edge 29-144, idle frame 12",
+    "max_at": "triangle 561 (vertices 310 316 311), edge 310-316, idle frame 12",
+    "min_ratio": 0.979,
+    "min_at": "triangle 342 (vertices 138 156 139), edge 156-139, idle frame 15",
     "severity": 1.048
    },
    {

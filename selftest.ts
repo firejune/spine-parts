@@ -10144,7 +10144,12 @@ function runReadmeLoopSuite(): number | null {
       // build must stop at check and name exactly those parts on that line, and nothing else.
       const tracked = readJsonAt(join(ex, 'config.json')) as { meshes?: Record<string, Record<string, unknown>> };
       const proposed = readJsonAt(join(ex, 'proposal.json')) as { meshes?: Record<string, Record<string, unknown>> };
-      const corrected = Object.keys(tracked.meshes ?? {}).filter((m) => 'contour' in (tracked.meshes?.[m] ?? {}) && 'grid' in (proposed.meshes?.[m] ?? {})).sort();
+      // A contour mesh that declares regions moved off the lattice to carry them (a lattice has none; sample's topwear and
+      // bottomwear, issue #183), not as a TIP_OVER_ROOT correction, so the uncorrected build is not required to stop on it.
+      const corrected = Object.keys(tracked.meshes ?? {})
+        .filter((m) => 'contour' in (tracked.meshes?.[m] ?? {}) && 'grid' in (proposed.meshes?.[m] ?? {}))
+        .filter((m) => ((tracked.meshes?.[m]?.contour as { regions?: unknown[] } | undefined)?.regions ?? []).length === 0)
+        .sort();
       const buildAt = lines.findIndex((l) => /^rig-parts build /.test(l));
       const named = (r.refused?.fails ?? []).map((l) => /FAIL {2}CHECK_TIP_OVER_ROOT: part "([^"]+)"/.exec(l)?.[1] ?? '');
       const ok =
@@ -12764,6 +12769,10 @@ function runStructureSuite(): number {
     const dir = join(EXAMPLES_DIR, key);
     const cfgRig = loadComparison(join(dir, 'config.json'), join(dir, 'expected', 'rig.json'), null);
     const propCfg = loadComparison(join(dir, 'proposal.json'), join(dir, 'config.json'), null);
+    // Issue #183: a bone the config authors beyond the proposal is allowed only as a physics constraint's own bone
+    // (sample's chest_jiggle and hip_jiggle): propose writes no constraint, so it cannot have proposed that bone.
+    const exCons = ((readJsonAt(join(dir, 'config.json')) as { constraints?: Array<{ type?: string; bone?: string }> }).constraints ?? []).filter((c) => c.type === 'physics');
+    const authored = propCfg.unmappedRight.filter((n) => exCons.some((c) => c.bone === n));
     const origins = cfgRig.rows.filter((r) => 'value' in r.origin);
     const ctl = cfgRig.rows.flatMap((r) => (r.parent.kind === 'inserted-right' ? r.parent.between : []));
     const odd = cfgRig.rows.filter((r) => r.parent.kind !== 'same' && r.parent.kind !== 'roots' && r.parent.kind !== 'inserted-right');
@@ -12776,15 +12785,15 @@ function runStructureSuite(): number {
       cfgRig.unmappedLeft.length === 0 &&
       cfgRig.unmappedRight.join(',') === ctl.join(',') &&
       loudRows(propCfg).length === 0 &&
-      propCfg.unmappedLeft.length + propCfg.unmappedRight.length === 0;
+      propCfg.unmappedLeft.length + propCfg.unmappedRight.length === authored.length;
     exampleOk &&= ok;
-    exampleLines.push(`${key}: config vs expected/rig.json ${origins.length} origins at 0, ${ctl.length} ${CONTROL_SUFFIX} between, other parents ${odd.length}; proposal vs config loud rows ${loudRows(propCfg).length}`);
+    exampleLines.push(`${key}: config vs expected/rig.json ${origins.length} origins at 0, ${ctl.length} ${CONTROL_SUFFIX} between, other parents ${odd.length}; proposal vs config loud rows ${loudRows(propCfg).length}, unmatched ${propCfg.unmappedLeft.length + propCfg.unmappedRight.length} (physics bones the config authors: ${authored.length === 0 ? 'none' : authored.join(', ')})`);
   }
   say(
     'ST25_EACH_TRACKED_EXAMPLE_S_CONFIG_IS_ITS_RIG_JSON_THROUGH_THE_STAGE_AND_ITS_PROPOSAL_IS_ITS_CONFIG',
     exampleOk && exampleLines.length > 0,
     exampleLines.join('; '),
-    why('expected/rig.json is a flat rig — the reference\'s, or for an example the reference never built (scarf) this port\'s build carried to the flat form by flattenRig — every offset a difference of integer landmarks at 3 places, so the stage rule must give every origin exactly 0; the only parents not the same are the rig stage\'s controls, one bone up; the tracked proposal and config carry equal bones (the reference used only to score)'),
+    why('expected/rig.json is a flat rig — the reference\'s, or for an example the reference never built (scarf) this port\'s build carried to the flat form by flattenRig — every offset a difference of integer landmarks at 3 places, so the stage rule must give every origin exactly 0; the only parents not the same are the rig stage\'s controls, one bone up; the tracked proposal and config carry equal bones (the reference used only to score) but for a physics constraint\'s own bone, which the config authors and propose cannot write (issue #183)'),
   );
 
   // ST26 — the printout and its determinism.
