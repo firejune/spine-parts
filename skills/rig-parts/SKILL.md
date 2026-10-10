@@ -1,6 +1,6 @@
 ---
 name: rig-parts
-description: Turn one anime character painting and its See-through layer decomposition into a verified 2D character rig (Spine 4.3 skeleton data) — measured parts, weighted meshes, bone chains and a looping idle — with rig-parts, which gates everything through rig-c before it is written. Use for a request to rig or animate a single character painting, to run or read rig-parts layers, sheet, assemble, propose, rig, check, loop or build, or to write or fix a rig-parts config.json. Not for cutting art into parts by hand, for authoring a rig from loose PNGs (that is the rigc skill), for expressions or lip-sync, or for running See-through itself.
+description: Turn one anime character painting and its See-through layer decomposition into a verified 2D character rig (Spine 4.3 skeleton data) — measured parts, weighted meshes, bone chains and a looping idle — with rig-parts, which gates everything through rig-c before it is written. Use for a request to rig or animate a single character painting, to run or read rig-parts layers, sheet, assemble, propose, rig, check, loop or build, or to write or fix a rig-parts config.json. Not for cutting art into parts by hand, for authoring a rig from loose PNGs (that is the rigc skill), for lip-sync or swapping a part's image, or for running See-through itself.
 license: MIT
 compatibility: Requires Bun 1.2 or later. The tool is the npm package rig-parts (bunx rig-parts, or bun add -d rig-parts); rig-c is installed with it. See-through is run separately.
 ---
@@ -132,11 +132,13 @@ share is synthesis where the painting was there to be taken.
   a GPU or the network.
 - Give a layer two depths: a layer in front of another in one place and behind it in
   another is right in the still and wrong in motion.
-- Expressions, lip-sync, or any animation but one looping `idle`.
+- Propose, key or judge any animation but the looping `idle`, or lip-sync: every slot
+  holds one attachment, so nothing swaps a part's image. Expressions and a jiggle are
+  yours to build on top (below).
 - Write animated WebP: `loop` writes GIF and APNG.
 - Know what the art does not tag: a swinging element painted inside another layer,
   hair of an unfamiliar shape, whether an accessory swings. Those are yours to add.
-- Promise a success rate. Two public characters and eight private ones check green;
+- Promise a success rate. Three public characters and eight private ones check green;
   that is all that has been measured.
 
 ## Where to read next
@@ -144,6 +146,15 @@ share is synthesis where the painting was there to be taken.
 [docs/AUTHORING.md](https://github.com/firejune/rig-parts/blob/main/docs/AUTHORING.md)
 first — every config field, the command order, what to read after each stage, every
 refusal. It is in the installed package at `node_modules/rig-parts/docs/AUTHORING.md`,
-the copy that matches the version you run. A `RIG_RIGC_GREEN` or `CHECK_RIGC_GREEN`
+the copy that matches the version you run. Two recipes there cover what this package
+leaves to you:
+
+- An expression or any other named animation: AUTHORING §3, *Recipe: expressions and other
+  named animations* (`motion.animations_from`; built and gated with the rig, not measured).
+- A jiggle (a bust, the hips): AUTHORING §3, *Recipe: a soft region driven by physics* (a
+  config-only bone, a `contour` region on it, a `physics` constraint; `examples/sample`
+  carries one, and its slow idle barely moves it).
+
+A `RIG_RIGC_GREEN` or `CHECK_RIGC_GREEN`
 line quotes rig-c's own assertion; rig-c's guide for those is
 `node_modules/rig-c/docs/AUTHORING.md`, and its `rigc` skill covers the compiler.
