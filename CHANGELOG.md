@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/firejune/rig-parts/compare/v1.1.0...v1.1.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **docs:** the headline says what the tool makes, and names Spine once as the format ([#181](https://github.com/firejune/rig-parts/issues/181)) ([9c4d3f3](https://github.com/firejune/rig-parts/commit/9c4d3f38c89e9c7ff51cc29b8de9cece1af979a1))
+
 ## [1.1.0](https://github.com/firejune/rig-parts/compare/v1.0.0...v1.1.0) (2026-10-10)
 
 
