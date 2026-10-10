@@ -73,6 +73,10 @@
  *   recorded with the same `<run>:<tag>` (its pixels came from that layer).
  *   The cut is made after step 4, so the new part takes the merged pixels and
  *   every later step treats it as a part of its own.
+ * - **What lies under a piece** (`cuts[].under`, `fillUnder`, issue #193) is
+ *   this port's: an authored image the base takes where the cut removed its
+ *   pixels, so a piece that swings away leaves no hole. The stage reads that
+ *   image only there and never invents a pixel.
  *
  * Pure: no clock, no randomness, no file access. The CLI reads and writes.
  */
@@ -213,6 +217,13 @@ export interface AssembleInput {
   patches: Patch[];
   /** `assemble.cuts`: plan parts' pixels taken into new parts by polygon (`cutPart`), placed per their `draw`. */
   cuts: Cut[];
+  /**
+   * `cuts[i].under`'s image, decoded by the caller (the stage reads no file),
+   * at the cut's index: null for a cut without `under`. Absent = every cut
+   * without one. A cut that names `under` with no image here is refused
+   * (`ASSEMBLE_UNDER_PRESENT`), never assembled as if it named none.
+   */
+  under?: ReadonlyArray<Raster | null>;
   seamRule: SeamRule;
   projectRule: ProjectRule;
 }
@@ -1490,6 +1501,10 @@ export interface CutCount {
   taken: number;
   /** Of `taken`, the band the from part keeps as well (`cutBand`); counted in neither `kept` nor `before` twice. */
   band: number;
+  /** With `under` only (issue #193): the base pixels filled from the under image (`fillUnder`); absent without it. */
+  under?: number;
+  /** With `under` only: the removed pixels the image left empty (its alpha below the alpha removed); `under + underEmpty` is the removed count. */
+  underEmpty?: number;
 }
 
 /**
@@ -1502,8 +1517,56 @@ export function cutLines(cuts: readonly CutCount[]): string[] {
   const byFrom = new Map<string, CutCount[]>();
   for (const c of cuts) byFrom.set(c.from, [...(byFrom.get(c.from) ?? []), c]);
   return [...byFrom.entries()].map(
-    ([from, cs]) => `  cut: "${from}" opaque ${cs[0].before} = "${from}" ${cs[0].kept} + ${cs.map((c) => `"${c.into}" ${c.taken}`).join(' + ')}; band ${cs.reduce((a, c) => a + c.band, 0)} px held by both`,
+    ([from, cs]) =>
+      `  cut: "${from}" opaque ${cs[0].before} = "${from}" ${cs[0].kept} + ${cs.map((c) => `"${c.into}" ${c.taken}`).join(' + ')}; band ${cs.reduce((a, c) => a + c.band, 0)} px held by both` +
+      (cs.some((c) => c.under !== undefined) ? `; under ${cs.reduce((a, c) => a + (c.under ?? 0), 0)} px filled, ${cs.reduce((a, c) => a + (c.underEmpty ?? 0), 0)} px left empty` : ''),
   );
+}
+
+/**
+ * The box a cut's `under` image covers (issue #193): the polygon's bounding
+ * box in rig pixels, its corners the polygon's least and greatest x and y —
+ * the image is `x1 - x0` by `y1 - y0` and its pixel `(i, j)` is rig pixel
+ * `(x0 + i, y0 + j)`. Every pixel the polygon holds lies in it: a pixel is
+ * held by its centre, and the centres inside lie strictly between the
+ * extreme vertices.
+ */
+export function underBox(polygon: ReadonlyArray<readonly [number, number]>): { x0: number; y0: number; w: number; h: number } {
+  const xs = polygon.map((q) => q[0]);
+  const ys = polygon.map((q) => q[1]);
+  const x0 = Math.min(...xs);
+  const y0 = Math.min(...ys);
+  return { x0, y0, w: Math.max(...xs) - x0, h: Math.max(...ys) - y0 };
+}
+
+/**
+ * Fill the base where a cut removed its pixels (issue #193). The removed
+ * pixels are those the piece holds (alpha above 0) and the band does not —
+ * the pixels the cut cleared in the base. At each, when the under image's
+ * alpha is at least the alpha the cut removed there, the base takes the
+ * image's pixel, colour and alpha (filled); otherwise the base stays cleared
+ * there (left empty): a transparent pixel is the author's "nothing lies under
+ * here", and a pixel less opaque than the layer was is not half-filled. That
+ * is the only place the image is read: its pixels over the band, over pixels
+ * the layer never had, and over the box outside the polygon change nothing.
+ * `filled + empty` is the removed count.
+ */
+export function fillUnder(base: Raster, piece: Raster, band: Mask, under: Raster, box: { x0: number; y0: number }): { filled: number; empty: number } {
+  const W = base.width;
+  let filled = 0;
+  let empty = 0;
+  for (let p = 0; p < W * base.height; p++) {
+    const a = piece.data[p * 4 + 3];
+    if (a === 0 || band.data[p] === 1) continue;
+    const u = ((Math.floor(p / W) - box.y0) * under.width + (p % W) - box.x0) * 4;
+    if (under.data[u + 3] < a) {
+      empty++;
+      continue;
+    }
+    base.data.set(under.data.subarray(u, u + 4), p * 4);
+    filled++;
+  }
+  return { filled, empty };
 }
 
 /**
@@ -1581,6 +1644,7 @@ export function checkPlanAgainstRuns(plan: PlanEntry[], extend: Extend[], full: 
  */
 export function assemble(input: AssembleInput): AssembleResult {
   const { source, full, head, plan, extend, patches, cuts, seamRule, projectRule } = input;
+  const unders = cuts.map((q, i) => input.under?.[i] ?? null);
   const frame = checkGeometry(
     { sourceW: source.width, sourceH: source.height, resolution: input.resolution, headBox: input.headBox, rigScale: input.rigScale },
     { full, head },
@@ -1645,6 +1709,41 @@ export function assemble(input: AssembleInput): AssembleResult {
           detail: `shares ${shared} rig pixel(s) with cuts[${j}] (part "${cuts[j].into}"), the first at ${first % W},${Math.floor(first / W)}; both cut "${q.from}", and a pixel goes to one part — polygons of one part that do not overlap are required`,
         });
       }
+    }
+  });
+  // A cut's under image (issue #193), before any pixel work too: it must have
+  // been read, be exactly the polygon's bounding box, and the piece must be
+  // drawn in front of the part it fills — drawn behind, the fill would hide
+  // the piece where it was painted.
+  const order0 = drawOrder(
+    plan.map((e) => e[0]),
+    patches,
+    cuts,
+  );
+  cuts.forEach((q, i) => {
+    if (q.under === undefined) return;
+    const object = `config.assemble.cuts[${i}].under (part "${q.into}")`;
+    const u = unders[i];
+    if (u === null) {
+      patchProblems.push({ code: 'ASSEMBLE_UNDER_PRESENT', object, detail: `names ${q.under}, and no image was handed to the stage for it; the decoded PNG is required (a caller of assemble() reads the file)` });
+      return;
+    }
+    const box = underBox(q.polygon);
+    if (u.width !== box.w || u.height !== box.h) {
+      patchProblems.push({
+        code: 'ASSEMBLE_UNDER_SIZE',
+        object,
+        detail: `${q.under} is ${u.width}x${u.height}; the polygon's bounding box is ${box.w}x${box.h} at ${box.x0},${box.y0} (least and greatest polygon x and y, in rig pixels), and an image of exactly that size is required — its pixel (i, j) is rig pixel (${box.x0} + i, ${box.y0} + j)`,
+      });
+    }
+    const at = order0.findIndex((d) => 'cut' in d && d.cut === i);
+    const base = order0.findIndex((d) => 'plan' in d && plan[d.plan][0] === q.from);
+    if (at < base) {
+      patchProblems.push({
+        code: 'ASSEMBLE_UNDER_DRAW',
+        object: `config.assemble.cuts[${i}].draw (part "${q.into}")`,
+        detail: `is ${JSON.stringify(q.draw)}, which draws "${q.into}" behind "${q.from}"; with under, "${q.from}" is filled where the piece was painted and would hide it, so a draw in front of "${q.from}" is required — "front", or {"before": "<the plan part after ${q.from}>"} to keep the setup pose`,
+      });
     }
   });
   refuseIfAny(patchProblems);
@@ -1810,16 +1909,38 @@ export function assemble(input: AssembleInput): AssembleResult {
     }
     b.region = own;
     b.merged = mergedIn(b, own);
-    mine.forEach((i, k) => cutCounts.push({ from: name, into: cuts[i].into, before, kept, taken: taken[k], band: bands[k] }));
+    // Issue #193: the base takes the under image where the cut removed its
+    // pixels, after the counts above were taken from the cut alone. A filled
+    // pixel lies outside the base's region, so it is counted occluded (the
+    // piece is drawn over it) and never projected.
+    const filled = mine.map((i) => {
+      const u = unders[i];
+      if (u === null) return undefined;
+      // Filled where the image is at least as opaque as the layer was; left empty elsewhere (`fillUnder`).
+      const f = fillUnder(b.r, (pieces[i] as Built).r, cutBand(cutMasks[i], cuts[i].overlap), u, underBox(cuts[i].polygon));
+      if (f.filled === 0) {
+        empty.push({
+          code: 'ASSEMBLE_UNDER_EMPTY',
+          object: `config.assemble.cuts[${i}].under (part "${cuts[i].into}")`,
+          detail: `${cuts[i].under} fills 0 of the ${f.empty} pixel(s) the cut removed from "${name}": at every one its alpha is below the alpha removed (an all-transparent image, or another file); an image that fills at least one is required — to leave the whole hole, drop under`,
+        });
+      }
+      return f;
+    });
+    mine.forEach((i, k) => {
+      const c: CutCount = { from: name, into: cuts[i].into, before, kept, taken: taken[k], band: bands[k] };
+      const f = filled[k];
+      if (f !== undefined) {
+        c.under = f.filled;
+        c.underEmpty = f.empty;
+      }
+      cutCounts.push(c);
+    });
   });
   refuseIfAny(empty);
   // In cut order, as the config lists them.
   cutCounts.sort((a, b) => cuts.findIndex((q) => q.into === a.into) - cuts.findIndex((q) => q.into === b.into));
-  const order = drawOrder(
-    plan.map((e) => e[0]),
-    patches,
-    cuts,
-  );
+  const order = order0;
   const pieceAt = (d: { plan: number } | { cut: number }): { name: string; b: Built } =>
     'plan' in d ? { name: plan[d.plan][0], b: built[d.plan] as Built } : { name: cuts[d.cut].into, b: pieces[d.cut] as Built };
 
@@ -1857,7 +1978,8 @@ export function assemble(input: AssembleInput): AssembleResult {
     for (let p = 0; p < W * H; p++) {
       const e = trace.from[p];
       const own = e < 0 ? st : (stats.get(extendKeys[e]) as ProjectionStats);
-      if (r.data[p * 4 + 3] > OPAQUE_ALPHA_ABOVE && own.clear.data[p] === 1) visible.data[p] = 1;
+      // A pixel outside the piece's region is a base pixel filled from a cut's under image (issue #193): occluded, never visible.
+      if (r.data[p * 4 + 3] > OPAQUE_ALPHA_ABOVE && own.clear.data[p] === 1 && (region === null || region.data[p] === 1)) visible.data[p] = 1;
       if (trace.ring.data[p] === 0 && own.takenMask.data[p] === 1 && (region === null || region.data[p] === 1)) projected.data[p] = 1;
     }
     const { x0, y0, x1, y1, opaque } = measureBox(r);

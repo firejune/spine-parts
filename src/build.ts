@@ -40,8 +40,8 @@
  * no child process. rig-c runs as a process, but the process is injected
  * as a {@link RigcRunner}, exactly as `src/check.ts` takes it.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { type AnimFrame, EncodeError, encodeApng, encodeIndexedApng, INDEXED_DEFAULTS } from './apng.ts';
 import { assemble, type AssembleResult, cutLines, figuresLine, holeLines, type ProjectRule, type SeamRule, stageFields } from './assemble.ts';
 import { allocationClause, type Reducer, stageBClause, unboundedClause } from './automesh.ts';
@@ -71,7 +71,7 @@ import {
   untestedIntervals,
 } from './autoreplay.ts';
 import { BARS, besideIdleLine, causeLines, REQUIREMENTS_DIR, type CheckReport, type PackLine, DEFAULT_PACK_SHAPE, DEFAULT_PAGE_EDGES, JUDGEMENT_LINES, type JudgementLine, packedBuildArgs, packedBuildLabel, type PackMode, type PackShape, type PageEdges, readFrameSet, REPORTED_LINES, type ReportedLine, type RigcRunner, runCheck, SEAM_MEAN_BAR, SOURCE_LINE, SEAM_PX_BAR, SEAM_PX_LEVEL, SEAM_PX_LEVEL_HIGH, SPINEBOY_YARDSTICK } from './check.ts';
-import { loadConfig, loadConfigAndAnimations, loadEarlyConfig } from './config.ts';
+import { type Cut, loadConfig, loadConfigAndAnimations, loadEarlyConfig } from './config.ts';
 import { PartsError, type Problem, problemLine, refuseIfAny } from './errors.ts';
 import type { MeshQualityReport, MotionSchedule } from 'rig-c/mesh';
 import { encodeGif } from './gif.ts';
@@ -159,6 +159,34 @@ export function fringeLines(parts: readonly PartRecord[]): string[] {
     });
 }
 
+/**
+ * Each cut's `under` image (issue #193), read from its path relative to the
+ * config's directory, null for a cut without one. Every cut is read before
+ * one refusal names them all: no such file (`ASSEMBLE_UNDER_PRESENT`), or a
+ * file that does not decode as a PNG (`ASSEMBLE_UNDER_DECODES`). The stage
+ * itself holds the image to the polygon's box and the removed pixels.
+ */
+export function readUnders(configPath: string, cuts: readonly Cut[]): Array<Raster | null> {
+  const problems: Problem[] = [];
+  const out = cuts.map((q, i): Raster | null => {
+    if (q.under === undefined) return null;
+    const file = resolve(dirname(resolve(configPath)), q.under);
+    const object = `config.assemble.cuts[${i}].under (part "${q.into}")`;
+    if (!existsSync(file) || !statSync(file).isFile()) {
+      problems.push({ code: 'ASSEMBLE_UNDER_PRESENT', object, detail: `names ${file}, which is no such file; a PNG of what lies under the piece, its path relative to the config's directory, is required` });
+      return null;
+    }
+    try {
+      return readPng(file);
+    } catch (err) {
+      problems.push({ code: 'ASSEMBLE_UNDER_DECODES', object, detail: `${file}: ${(err as Error).message.split('\n')[0]}; a PNG is required` });
+      return null;
+    }
+  });
+  refuseIfAny(problems);
+  return out;
+}
+
 /** Read, assemble, and write only after every refusal has had its chance. Throws a PartsError on a refusal, having written nothing. */
 export function assembleStage(input: AssembleStageInput, outs: AssembleOutputs, log: Log): AssembleResult {
   const src = readSource(input.source);
@@ -166,7 +194,8 @@ export function assembleStage(input: AssembleStageInput, outs: AssembleOutputs, 
   // The early door: assemble runs before propose has drafted bones, meshes,
   // regions and motion, so it requires only what it reads (issue #20).
   const fields = stageFields(loadEarlyConfig(input.config, 'assemble'));
-  const result = assemble({ source: src, full: runs.full, head: runs.head, ...fields, seamRule: input.seam, projectRule: input.project });
+  const under = readUnders(input.config, fields.cuts);
+  const result = assemble({ source: src, full: runs.full, head: runs.head, ...fields, under, seamRule: input.seam, projectRule: input.project });
   // Emit only after green: every refusal above has already thrown.
   mkdirSync(outs.partsDir, { recursive: true });
   mkdirSync(dirname(outs.partsJson), { recursive: true });

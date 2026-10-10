@@ -1431,6 +1431,21 @@ function runConfigSuite(): number {
     'HQ\'s ruling on #170: the band the base keeps under a piece is the author\'s to state, like draw — absent is a refusal naming the field, never a default',
   );
 
+  // Issue #193: a cut's under is optional and, when present, a non-empty path string. The loader does not open the
+  // file (the assemble stage reads it, relative to the config's directory), so a path to nothing still loads here.
+  const underOf = (u: unknown, door: 'full' | 'assemble' = 'full'): string => {
+    const entry: Record<string, unknown> = { ...tie, under: u };
+    const e = refusals(() => (door === 'full' ? parseConfig(cutCfg([entry])) : parseEarlyConfig(early([entry]), 'assemble')));
+    return e === null ? 'loads' : e.problems.map((q) => `${q.code} ${q.object}`).join('; ');
+  };
+  const un = { path: underOf('under/tie.png'), early: underOf('under/tie.png', 'assemble'), blank: underOf(''), num: underOf(3), nul: underOf(null), earlyBlank: underOf('', 'assemble') };
+  say(
+    'CF78_A_CUT_S_UNDER_IS_AN_OPTIONAL_NON_EMPTY_PATH_THROUGH_EITHER_DOOR',
+    un.path === 'loads' && un.early === 'loads' && [un.blank, un.num, un.nul, un.earlyBlank].every((x) => x === 'CONFIG_FIELD_TYPE config.assemble.cuts[0].under'),
+    `"under/tie.png" -> ${un.path} (plain assemble's door: ${un.early}); "" -> ${un.blank} (plain assemble's door: ${un.earlyBlank}); 3 -> ${un.num}; null -> ${un.nul}; absent -> CF73's good cuts`,
+    'issue #193: the fill under a piece is the author\'s image, named by path; anything but a path is refused at the field, and an absent field is #170\'s cut exactly',
+  );
+
   runBlinkConfigCases(say);
   runRecordConfigCases(say);
   runConstraintConfigCases(say);
@@ -10924,9 +10939,10 @@ function runAssembleSuite(): number {
         { name: 'topwear', depth: 0.5, rects: [{ x0: 20, y0: 10, x1: 40, y1: 40, colour: C }] },
       ];
       const cutPlan: Array<[string, 'full' | 'head', string]> = [['handwear_l', 'full', 'handwear-l'], ['topwear', 'full', 'topwear']];
-      const runCut = (label: string, cuts: Array<Record<string, unknown>>): { r: ReturnType<typeof assemble>; lines: string[]; out: string } => {
+      const runCut = (label: string, cuts: Array<Record<string, unknown>>, files: Record<string, Uint8Array> = {}): { r: ReturnType<typeof assemble>; lines: string[]; out: string } => {
         const d = join(cutStage, label);
         writeRun(join(d, 'full'), cutFull);
+        for (const [name, bytes] of Object.entries(files)) writeFileSync(join(d, name), bytes);
         writeRun(join(d, 'head'), FRAMED_HEAD);
         writeFileSync(join(d, 'painting.png'), encodePngBytes(flatPainting()));
         const cfg = assembleConfig({ plan: cutPlan, extend: [] });
@@ -11050,6 +11066,126 @@ function runAssembleSuite(): number {
       } catch (err) {
         say('AS53_A_CUT_S_OVERLAP_LEAVES_THE_HAND_COUNTED_BAND_IN_THE_BASE_AS_WELL_AND_0_LEAVES_NONE', false, `the stage threw: ${(err as Error).message.split('\n')[0]}`, 'the stage must assemble the planted band green');
       }
+
+      // Issue #193: what lies under a piece. The under image is UB, opaque blue, over the polygon's bounding box; the
+      // fixture's art is C at 255, so a base pixel is C (kept), UB (filled) or transparent. By hand:
+      // - the triangle [[20,10],[40,10],[20,30]] at overlap 0: its box is x 20..39, y 10..29 = 20x20 at 20,10. The cut
+      //   removes its 190 px (AS49), all at alpha 255 and UB's 255 covers each, so 190 px are filled: alone (no knot), the
+      //   base keeps 600 - 190 = 410 C and holds 410 C + 190 UB = 600 opaque px. The box's other 210 px are UB in the image too and are base art the cut did
+      //   not remove, so they stay C: rig (39, 10) (u + v = 19, outside) is C; (20, 10) is UB.
+      // - the rectangle [[30,10],[40,10],[40,40],[30,40]] at overlap 2: box 10x30 at 30,10; the piece takes 300, the band
+      //   is 144 (AS53) and stays C in the base, so the cut removed 300 - 144 = 156 px and 156 are filled: 300 + 144 C
+      //   + 156 UB = 600 opaque px; rig (30, 10) is band (C), (32, 12) is removed (UB).
+      // The piece is drawn "front" and is opaque wherever it took a pixel, so the stack composites to what the cut
+      // without under composited: the figures are equal, and the filled pixels are occluded, not visible.
+      const UB: [number, number, number, number] = [0, 0, 255, 255];
+      const underPng = (w: number, h: number, px: (i: number, j: number) => [number, number, number, number] = () => UB): Raster => {
+        const r = newRaster(w, h);
+        for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) r.data.set(px(i, j), (j * w + i) * 4);
+        return r;
+      };
+      const TRI_FRONT = { ...TIE, draw: 'front' };
+      const RECT2 = { from: 'topwear', into: 'tie', polygon: [[30, 10], [40, 10], [40, 40], [30, 40]], draw: 'front', overlap: 2 };
+      try {
+        const bare = runCut('under-bare', [TRI_FRONT]);
+        const tri = runCut('under-tri', [{ ...TRI_FRONT, under: 'tie-under.png' }], { 'tie-under.png': encodePngBytes(underPng(20, 20)) });
+        const rect = runCut('under-rect', [{ ...RECT2, under: 'tie-under.png' }], { 'tie-under.png': encodePngBytes(underPng(10, 30)) });
+        const rec = (r: ReturnType<typeof assemble>, n: string): PartRecord => r.parts.parts.find((p) => p.name === n) as PartRecord;
+        const base = (r: ReturnType<typeof assemble>): Raster => (r.images.find((q) => q.record.name === 'topwear') as PlacedPart).image;
+        const tally = (r: ReturnType<typeof assemble>): string => {
+          const im = base(r);
+          let c = 0;
+          let u = 0;
+          for (let q = 0; q < im.width * im.height; q++) {
+            const px = Array.from(im.data.subarray(q * 4, q * 4 + 4)).join(',');
+            if (px === [...C, 255].join(',')) c++;
+            else if (px === UB.join(',')) u++;
+          }
+          return `${c} C + ${u} UB`;
+        };
+        const at = (r: ReturnType<typeof assemble>, x: number, y: number): string => {
+          const t = rec(r, 'topwear');
+          const im = base(r);
+          const q = ((y - t.y) * im.width + (x - t.x)) * 4;
+          const px = Array.from(im.data.subarray(q, q + 4)).join(',');
+          return px === [...C, 255].join(',') ? 'C' : px === UB.join(',') ? 'UB' : px;
+        };
+        const lineOf = (x: { lines: string[] }): string => x.lines.find((l) => l.startsWith('  cut: ')) ?? 'NONE';
+        const [tb, tt, tr] = [rec(bare.r, 'topwear'), rec(tri.r, 'topwear'), rec(rect.r, 'topwear')];
+        const triLine = '  cut: "topwear" opaque 600 = "topwear" 410 + "tie" 190; band 0 px held by both; under 190 px filled, 0 px left empty';
+        const rectLine = '  cut: "topwear" opaque 600 = "topwear" 300 + "tie" 300; band 144 px held by both; under 156 px filled, 0 px left empty';
+        const bareLine = '  cut: "topwear" opaque 600 = "topwear" 410 + "tie" 190; band 0 px held by both';
+        say(
+          'AS54_A_CUT_S_UNDER_IMAGE_FILLS_THE_BASE_EXACTLY_WHERE_THE_CUT_REMOVED_ITS_PIXELS_AND_NOWHERE_ELSE',
+          lineOf(bare) === bareLine && JSON.stringify(bare.r.cuts) === '[{"from":"topwear","into":"tie","before":600,"kept":410,"taken":190,"band":0}]' &&
+            lineOf(tri) === triLine && tri.r.cuts[0].under === 190 && tri.r.cuts[0].underEmpty === 0 &&
+            tally(tri.r) === '410 C + 190 UB' && tt.opaque_px === 600 && at(tri.r, 39, 10) === 'C' && at(tri.r, 20, 10) === 'UB' &&
+            tt.visible_px === tb.visible_px && tt.occluded_px === (tb.occluded_px ?? 0) + 190 && tt.source_px_taken === tb.source_px_taken &&
+            JSON.stringify(rec(tri.r, 'tie')) === JSON.stringify(rec(bare.r, 'tie')) && figuresLine(tri.r.figures) === figuresLine(bare.r.figures) &&
+            lineOf(rect) === rectLine && tally(rect.r) === '444 C + 156 UB' && tr.opaque_px === 600 && at(rect.r, 30, 10) === 'C' && at(rect.r, 32, 12) === 'UB',
+          `no under: ${lineOf(bare)}, base ${tally(bare.r)}; triangle: ${lineOf(tri)}, base ${tally(tri.r)} (by hand 410 C + 190 UB), opaque ${tt.opaque_px}, rig (39,10) ${at(tri.r, 39, 10)}, (20,10) ${at(tri.r, 20, 10)}, visible ${tb.visible_px} -> ${tt.visible_px}, occluded ${tb.occluded_px} -> ${tt.occluded_px}, piece record and recomposite unchanged ${JSON.stringify(rec(tri.r, 'tie')) === JSON.stringify(rec(bare.r, 'tie')) && figuresLine(tri.r.figures) === figuresLine(bare.r.figures)}; rectangle at overlap 2: ${lineOf(rect)}, base ${tally(rect.r)} (by hand 444 C + 156 UB), band pixel (30,10) ${at(rect.r, 30, 10)}, removed pixel (32,12) ${at(rect.r, 32, 12)}`,
+          'issue #193: the base is filled from the author\'s image exactly where the cut left it nothing — not over the band it kept, not over its own art in the box outside the polygon — and the fill sits under the piece, so the stack at rest is unchanged; without under the line and the record are #170\'s',
+        );
+      } catch (err) {
+        say('AS54_A_CUT_S_UNDER_IMAGE_FILLS_THE_BASE_EXACTLY_WHERE_THE_CUT_REMOVED_ITS_PIXELS_AND_NOWHERE_ELSE', false, `the stage threw: ${(err as Error).message.split('\n')[0]}`, 'the stage must assemble the planted fill green');
+      }
+
+      // The two counts and the stage's refusals, on the same fixture through assemble() itself. By hand:
+      // - a 19x20 image for the 20x20 box is ASSEMBLE_UNDER_SIZE with both sizes;
+      // - an image transparent in its column i = 0 and at alpha 254 at (1, 0): the triangle removed the column u = 0 at
+      //   v = 0..18 (u + v < 19), 19 px, and (1, 0), whose 255 the 254 does not reach: those 20 are left empty (a
+      //   transparent pixel says nothing lies under there) and the other 190 - 20 = 170 are filled; the base's image
+      //   holds 410 C + 170 UB and nothing at the 20 (no half-filled alpha-254 pixel);
+      // - an all-transparent image fills 0 of the 190: ASSEMBLE_UNDER_EMPTY;
+      // - drawn {before: "topwear"}, the piece is behind the base the fill would make opaque over it: ASSEMBLE_UNDER_DRAW;
+      // - a cut naming under with no image handed in is ASSEMBLE_UNDER_PRESENT;
+      // - the size and the draw together are named in one throw.
+      const underCut = (cut: Partial<Cut>, img: Raster | null): string => {
+        const e = refusals(() => assemble({ ...cutIn, cuts: [{ ...(TIE as Cut), draw: 'front', under: 'u.png', ...cut }], under: [img], seamRule: 'near-white' }));
+        return e === null ? 'assembles' : e.problems.map((q) => `${q.code} ${q.object}: ${q.detail}`).join(' | ');
+      };
+      const holed = underPng(20, 20, (i, j) => (i === 0 ? [0, 0, 255, 0] : i === 1 && j === 0 ? [0, 0, 255, 254] : UB));
+      const uSize = underCut({}, underPng(19, 20));
+      const holedRun = assemble({ ...cutIn, cuts: [{ ...(TIE as Cut), draw: 'front', under: 'u.png' }], under: [holed], seamRule: 'near-white' });
+      const holedBase = (holedRun.images.find((q) => q.record.name === 'topwear') as PlacedPart).image;
+      let hc = 0;
+      let hu = 0;
+      let hx = 0;
+      for (let q = 0; q < holedBase.width * holedBase.height; q++) {
+        const px = Array.from(holedBase.data.subarray(q * 4, q * 4 + 4)).join(',');
+        if (px === [...C, 255].join(',')) hc++;
+        else if (px === UB.join(',')) hu++;
+        else if (holedBase.data[q * 4 + 3] !== 0) hx++;
+      }
+      const holedCounts = `${holedRun.cuts[0].under} filled, ${holedRun.cuts[0].underEmpty} left empty; base ${hc} C + ${hu} UB + ${hx} other`;
+      const uEmpty = underCut({}, underPng(20, 20, () => [0, 0, 255, 0]));
+      const uDraw = underCut({ draw: { before: 'topwear' } }, underPng(20, 20));
+      const uNone = underCut({}, null);
+      const uBoth = underCut({ draw: { before: 'topwear' } }, underPng(19, 20));
+      const uGood = underCut({}, underPng(20, 20));
+      say(
+        'AS55_A_TRANSPARENT_UNDER_PIXEL_LEAVES_ITS_PIXEL_EMPTY_AND_COUNTED_AND_AN_IMAGE_OF_THE_WRONG_SIZE_THAT_FILLS_NOTHING_OR_UNDER_A_PIECE_DRAWN_BEHIND_IS_REFUSED_BY_NAME',
+        uGood === 'assembles' && holedCounts === '170 filled, 20 left empty; base 410 C + 170 UB + 0 other' &&
+          uSize.startsWith('ASSEMBLE_UNDER_SIZE config.assemble.cuts[0].under (part "tie"): u.png is 19x20; the polygon\'s bounding box is 20x20 at 20,10') &&
+          uEmpty.startsWith('ASSEMBLE_UNDER_EMPTY config.assemble.cuts[0].under (part "tie"): u.png fills 0 of the 190 pixel(s) the cut removed from "topwear"') &&
+          uDraw.startsWith('ASSEMBLE_UNDER_DRAW config.assemble.cuts[0].draw (part "tie")') &&
+          uNone.startsWith('ASSEMBLE_UNDER_PRESENT config.assemble.cuts[0].under (part "tie")') &&
+          head(uBoth) === 'ASSEMBLE_UNDER_SIZE config.assemble.cuts[0].under (part "tie") | ASSEMBLE_UNDER_DRAW config.assemble.cuts[0].draw (part "tie")',
+        `a good image -> ${uGood}; 19x20 -> ${uSize}; a transparent column and one alpha-254 pixel -> ${holedCounts} (by hand 170 filled, 20 left empty; 410 C + 170 UB + 0 other); all transparent -> ${uEmpty}; drawn before "topwear" -> ${head(uDraw)}; no image handed in -> ${head(uNone)}; the size and the draw together -> ${head(uBoth)}`,
+        'a transparent pixel is the author saying nothing lies under there, so it is left empty and counted on the line, where an unintended hole shows; an image that fills nothing is the wrong file, an image of another size is in some other place, and a piece drawn behind its filled base vanishes in the setup pose — each is named with its numbers, never assembled',
+      );
+
+      // The file, through the stage: a path to nothing and a file that is not a PNG, both named in one throw before any
+      // pixel work, and nothing written.
+      const fileRun = refusals(() => runCut('under-files', [{ ...TRI_FRONT, under: 'missing.png' }, { ...KNOT, under: 'not-a.png' }], { 'not-a.png': new TextEncoder().encode('not a png') }));
+      const fileOut = join(cutStage, 'under-files', 'out');
+      const fileLine = fileRun === null ? 'assembles' : fileRun.problems.map((q) => `${q.code} ${q.object}`).join(' | ');
+      say(
+        'AS56_AN_UNDER_FILE_THAT_IS_MISSING_OR_IS_NOT_A_PNG_IS_REFUSED_BY_NAME_AND_NOTHING_IS_WRITTEN',
+        fileLine === 'ASSEMBLE_UNDER_PRESENT config.assemble.cuts[0].under (part "tie") | ASSEMBLE_UNDER_DECODES config.assemble.cuts[1].under (part "knot")' && !existsSync(fileOut),
+        `a missing file and a text file -> ${fileLine}; out ${existsSync(fileOut) ? 'WRITTEN' : 'not written'}`,
+        'the under image is read relative to the config, as the author named it; a name that reads nothing is said once, for every cut, before the stage writes',
+      );
     } finally {
       rmSync(cutStage, { recursive: true, force: true });
     }
