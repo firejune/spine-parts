@@ -226,7 +226,18 @@ export interface ContourMeshSpec {
   exponent?: number;
   /** Absent: `"distance"`. */
   rule?: WeightRule;
+  /** Rows of vertices across the part along the chains named here (issue #188); absent places none. */
+  ribs?: RibsSpec;
 }
+
+/**
+ * `meshes.<part>.ribs` (issue #188): per chain the mesh's `segments` name, how
+ * many ribs each link carries between its origin and its end (`stations`, a
+ * whole number, 0 or more; required — a rib at each joint is always placed).
+ * The contour and automatic modes only; a lattice's vertices are its grid's
+ * corners, and a lattice mesh that declares ribs is refused.
+ */
+export type RibsSpec = Record<string, { stations: number }>;
 
 /**
  * `meshes.<part>.contour`. Lengths and positions are RIG pixels, like every
@@ -281,6 +292,8 @@ export interface AutoMeshSpec {
   exponent?: number;
   /** Absent: `"distance"`. */
   rule?: WeightRule;
+  /** As the contour mode's (issue #188): rows across the source along the chains named, kept by the reduction; absent places none. */
+  ribs?: RibsSpec;
 }
 
 export interface AutoSpec {
@@ -1368,7 +1381,7 @@ function checkMeshes(c: Check, v: Json, bones: Set<string>, chains: Map<string, 
     const at = `config.meshes.${part}`;
     // The known keys keep their old order (grid, r, segments) with contour after them, and `r` and `segments` are
     // required in the place and words the object check uses, so a lattice mesh's refusals read as they did.
-    const m = c.object(at, spec, [], ['grid', 'r', 'segments', 'contour', 'auto', 'exponent', 'rule']);
+    const m = c.object(at, spec, [], ['grid', 'r', 'segments', 'contour', 'auto', 'exponent', 'rule', 'ribs']);
     if (m === null) continue;
     for (const key of ['r', 'segments']) if (!(key in m)) c.fail('CONFIG_FIELD_PRESENT', `${at}.${key}`, 'is absent and required');
     const modes = ['grid', 'contour', 'auto'].filter((k) => k in m);
@@ -1408,6 +1421,38 @@ function checkMeshes(c: Check, v: Json, bones: Set<string>, chains: Map<string, 
         c.point(`${sp}[2]`, s[2]);
       });
     }
+    if ('ribs' in m) checkRibs(c, `${at}.ribs`, m, chains);
+  }
+}
+
+/**
+ * `meshes.<part>.ribs` (issue #188): an object of chain name → `{ stations }`.
+ * Each key must be a chain this mesh's `segments` name (a rib is placed along
+ * a chain the mesh is weighted to), `stations` a whole number, 0 or more, and
+ * the mesh one of the two modes that place vertices where declared; a lattice
+ * that declares ribs is refused (`CONFIG_RIBS_MODE`), and so is an object that
+ * names no chain, which would place nothing. Where a rib falls is decided at
+ * the rig stage, against the part's art (`src/contour.ts`, `placeRibs`).
+ */
+function checkRibs(c: Check, at: string, m: Record<string, Json>, chains: Map<string, number>): void {
+  if ('grid' in m) {
+    c.fail('CONFIG_RIBS_MODE', at, "is declared on a lattice mesh (grid); ribs are placed by the contour and auto modes, whose vertices go where they are declared — a lattice's vertices are its grid's corners, which no row can move; declare contour or auto, or remove ribs");
+  }
+  const v = m.ribs;
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    c.fail('CONFIG_FIELD_TYPE', at, `is ${show(v)}; an object of chain name -> { stations } is required`);
+    return;
+  }
+  const named = new Set((Array.isArray(m.segments) ? m.segments : []).filter((s): s is string => typeof s === 'string' && chains.has(s)));
+  const keys = Object.keys(v).filter((k) => !isDoorKey(k));
+  if (keys.length === 0) c.fail('CONFIG_FIELD_TYPE', at, 'names no chain; one or more chains this mesh\'s segments name are required — remove ribs to place none');
+  for (const k of keys) {
+    const kat = `${at}.${k}`;
+    if (!named.has(k)) {
+      c.fail('CONFIG_NAME_RESOLVES', kat, `names "${k}", which ${chains.has(k) ? "is a chain this mesh's segments do not name" : 'is not a chain config.bones declares'}; a chain among this mesh's segments is required${named.size > 0 ? ` (${[...named].join(', ')})` : ' (it names none)'}`);
+    }
+    const r = c.object(kat, (v as Record<string, Json>)[k], ['stations'], []);
+    if (r !== null && 'stations' in r) c.int(`${kat}.stations`, r.stations, 0);
   }
 }
 

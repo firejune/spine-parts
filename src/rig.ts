@@ -81,7 +81,7 @@
  * touches the disk, and the same inputs give the same bytes (key order is the
  * order the objects are built in, and every number is rounded by `pyRound`).
  */
-import { type AutoSpec, type BoneEntry, type WeightRule, type CharacterConfig, type ConfigConstraint, CONSTRAINT_FOLLOWS, constraintForRig, type ContourSpec, type Point, ROOT_BONE, weightsABone } from './config.ts';
+import { type AutoSpec, type BoneEntry, type WeightRule, type CharacterConfig, type ConfigConstraint, CONSTRAINT_FOLLOWS, constraintForRig, type ContourSpec, type Point, type RibsSpec, ROOT_BONE, weightsABone } from './config.ts';
 import { type BoneTransform, computeExactFrameTransforms, cropToSpineY, normaliseDegrees, toBoneLocal, toWorld } from './coords.ts';
 import { type Problem, refuseIfAny } from './errors.ts';
 import type { MeshCounts, MeshQualityReport, MeshReductionInput, MotionAmplitude, ReducedMesh, Termination } from 'rig-c/mesh';
@@ -108,7 +108,7 @@ import {
   worstRegion,
   worstResidual,
 } from './automesh.ts';
-import { type ContourReport, contourMesh, type ContourRegion } from './contour.ts';
+import { type ContourChainRibs, type ContourReport, contourMesh, type ContourRegion, type ContourRib } from './contour.ts';
 import { type LocalInfluence, localInfluences } from './localweights.ts';
 import { artCoverage, ART_ALPHA, latticeMesh, ONE_LOOP_PASSES } from './mesh.ts';
 import { BLINK, blinkHoldMisses, blinkSpan, CONTROL_SUFFIX, controlledBones, IDLE_FPS, idleMotion, type MotionSpec, moveKeysToControls } from './motion.ts';
@@ -382,11 +382,29 @@ export interface ContourMeshReport {
   mode: 'contour';
   /** The distance rule's exponent the mesh declared (issue #161); absent when it declared none and ran at 2. */
   exponent?: number;
+  /** Only when the mesh declared ribs (issue #188): what it declared and what was placed. Absent otherwise, so a mesh without ribs writes the row it always wrote. */
+  ribs?: RibsRow;
   params: { tolerance: number; margin: number; spacing: number; budget: number | null; stray: number | null };
   contour: ContourReport;
   regions: Array<{ name: string; bone: string; reached: number; whole: number }>;
   /** Only under `rule: "heat"` (issue #161), as the lattice row's. */
   heat?: HeatRow;
+}
+
+/**
+ * A mesh's ribs as its row echoes them (issue #188): the stations each chain declared, the ribs placed (one per link
+ * joint and station, chain by chain) and the vertices they hold, ends included. Each rib's own vertex list is in the
+ * contour report's `ribs` (the source's, in the automatic mode).
+ */
+export interface RibsRow {
+  chains: RibsSpec;
+  count: number;
+  vertices: number;
+}
+
+/** The row's echo of a mesh's ribs (issue #188). */
+function ribsRow(spec: RibsSpec, placed: readonly ContourRib[]): RibsRow {
+  return { chains: spec, count: placed.length, vertices: placed.reduce((n, r) => n + r.vertices.length, 0) };
 }
 
 /** What a declared `source.stray` cleared from an automatic part's art (issue #172): islands, their pixels, and the art they were part of. */
@@ -424,6 +442,8 @@ export interface AutoMeshReport {
   mode: 'auto';
   /** The distance rule's exponent the mesh declared (issue #161); absent when it declared none and ran at 2. */
   exponent?: number;
+  /** Only when the mesh declared ribs (issue #188), as the contour row's; `vertices` counts the source's, which the reduction keeps. */
+  ribs?: RibsRow;
   settings: {
     threshold: number;
     source: { tolerance: number; margin: number; spacing: number; stray: number | null };
@@ -586,6 +606,8 @@ export function buildRig(
   const tips = new Map<string, Point>();
   const child = new Map<string, Point>();
   const chains = new Map<string, string[]>();
+  /** Each chain's points and tip, rig px, as declared (issue #188: the ribs are placed along them). */
+  const chainLines = new Map<string, Point[]>();
   cfg.bones.forEach((e: BoneEntry, i) => {
     if ('chain' in e) {
       const names: string[] = [];
@@ -610,6 +632,7 @@ export function buildRig(
       });
       if (names.length > 0) tips.set(names[names.length - 1], [e.tip[0], e.tip[1]]);
       chains.set(e.chain, names);
+      chainLines.set(e.chain, polyline);
     } else {
       B.set(e.name, { name: e.name, parent: e.parent, x: e.at[0], y: e.at[1] });
       if (e.tip !== undefined) tips.set(e.name, [e.tip[0], e.tip[1]]);
@@ -863,6 +886,18 @@ export function buildRig(
     const deg = turn.get(bone) as number;
     return deg === 0 ? { image, x: places(x), y: places(y) } : { image, x: places(x), y: places(y), rotation: places(normaliseDegrees(-deg)) };
   };
+  // issue #188: the chains a mesh declared ribs on, in the order its segments name them, each chain's points and tip
+  // carried into the part image by the same translation as every other position. No ribs declared, none.
+  const chainRibs = (segments: ReadonlyArray<string | readonly [string, Point, Point]>, ribs: RibsSpec | undefined, ox: number, oy: number): ContourChainRibs[] => {
+    if (ribs === undefined) return [];
+    const named = [...new Set(segments.filter((sp): sp is string => typeof sp === 'string'))];
+    return named.flatMap((chain) => {
+      const line = chainLines.get(chain);
+      const declared = ribs[chain];
+      if (line === undefined || declared === undefined) return [];
+      return [{ chain, points: line.map(([x, y]) => [x - ox, y - oy] as [number, number]), stations: declared.stations }];
+    });
+  };
   // A contour mesh (issue #84): `src/contour.ts` over the padded image, every refusal collected with the others;
   // the weights by `src/localweights.ts`; slot, uvs, bind positions and by-name weights written as the lattice's.
   // The config's region numbers are rig px; the part image's are rig px less (p.x − PAD, p.y − PAD) — a
@@ -876,6 +911,7 @@ export function buildRig(
     exponent: number | undefined,
     segs: Segment[],
     rule: WeightRule,
+    ribSpec: { segments: ReadonlyArray<string | readonly [string, Point, Point]>; ribs?: RibsSpec },
     out: Problem[],
   ): { attachment: MeshAttachment; report: ContourMeshReport } | null => {
     const ox = p.x - PAD;
@@ -890,7 +926,8 @@ export function buildRig(
         ? { name: rg.name, shape: 'circle', cx: rg.cx - ox, cy: rg.cy - oy, r: rg.r, spacing: rg.spacing, band: rg.band }
         : { name: rg.name, shape: 'polygon', points: rg.points.map(([x, y]) => [x - ox, y - oy] as [number, number]), spacing: rg.spacing, band: rg.band },
     );
-    const cm = contourMesh(p.name, { width: w, height: h, alpha }, { threshold: ART_ALPHA, tolerance: spec.tolerance, margin: spec.margin, spacing: spec.spacing, budget: spec.budget, stray: spec.stray, regions: inPart });
+    const ribs = chainRibs(ribSpec.segments, ribSpec.ribs, ox, oy);
+    const cm = contourMesh(p.name, { width: w, height: h, alpha }, { threshold: ART_ALPHA, tolerance: spec.tolerance, margin: spec.margin, spacing: spec.spacing, budget: spec.budget, stray: spec.stray, regions: inPart, ...(ribs.length === 0 ? {} : { ribs }) });
     if (Array.isArray(cm)) {
       out.push(...cm);
       return null;
@@ -955,6 +992,7 @@ export function buildRig(
         art_coverage: pyRound(rep.coveredArtPixels / (rep.artPixels + rep.strayPixels), 5),
         mode: 'contour',
         ...(exponent === undefined ? {} : { exponent }),
+        ...(ribSpec.ribs === undefined ? {} : { ribs: ribsRow(ribSpec.ribs, cm.ribs ?? []) }),
         params: { tolerance: spec.tolerance, margin: spec.margin, spacing: spec.spacing, budget: spec.budget ?? null, stray: spec.stray ?? null },
         contour: rep,
         regions: regions.map((rg, k) => ({ name: rg.name, bone: rg.bone, reached: reached[k], whole: whole[k] })),
@@ -986,6 +1024,7 @@ export function buildRig(
     exponent: number | undefined,
     segs: Segment[],
     rule: WeightRule,
+    ribSpec: { segments: ReadonlyArray<string | readonly [string, Point, Point]>; ribs?: RibsSpec },
     out: Problem[],
   ): { attachment: MeshAttachment; report: AutoMeshReport; motion: AutoMotionCase } | null => {
     const ox = p.x - PAD;
@@ -997,7 +1036,7 @@ export function buildRig(
     const mask = { width: w, height: h, alpha };
     const object = `config.meshes.${p.name}.auto`;
     const regions = spec.regions ?? [];
-    const source = autoSource(p.name, mask, spec);
+    const source = autoSource(p.name, mask, spec, chainRibs(ribSpec.segments, ribSpec.ribs, ox, oy));
     if (Array.isArray(source)) {
       out.push(...source.map((q) => ({ ...q, detail: `${q.detail} (the automatic mode's source, at alpha ${AUTO_THRESHOLD} and above)` })));
       return null;
@@ -1112,6 +1151,7 @@ export function buildRig(
           art_coverage: pyRound(legacyArtCoverage(art, mesh.points, mesh.triangles), 5),
           mode: 'auto',
           ...(exponent === undefined ? {} : { exponent }),
+          ...(ribSpec.ribs === undefined ? {} : { ribs: ribsRow(ribSpec.ribs, source.ribs ?? []) }),
           settings: {
             threshold: input.art.threshold,
             source: { tolerance: spec.source.tolerance, margin: spec.source.margin, spacing: spec.source.spacing, stray: spec.source.stray ?? null },
@@ -1219,7 +1259,7 @@ export function buildRig(
     }
     const segs = meshSegments.get(p.name) as Segment[];
     if ('auto' in mesh) {
-      const row = autoAttachment(p, img, file, mesh.auto, mesh.r, mesh.exponent, segs, mesh.rule ?? 'distance', problems);
+      const row = autoAttachment(p, img, file, mesh.auto, mesh.r, mesh.exponent, segs, mesh.rule ?? 'distance', mesh, problems);
       if (row === null) continue;
       skin[p.name] = { [p.name]: row.attachment };
       slots.push({ name: p.name, bone: segs[0].bone, attachment: p.name });
@@ -1228,7 +1268,7 @@ export function buildRig(
       continue;
     }
     if ('contour' in mesh) {
-      const row = contourAttachment(p, img, file, mesh.contour, mesh.r, mesh.exponent, segs, mesh.rule ?? 'distance', problems);
+      const row = contourAttachment(p, img, file, mesh.contour, mesh.r, mesh.exponent, segs, mesh.rule ?? 'distance', mesh, problems);
       if (row === null) continue;
       skin[p.name] = { [p.name]: row.attachment };
       slots.push({ name: p.name, bone: segs[0].bone, attachment: p.name });

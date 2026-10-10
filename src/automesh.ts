@@ -84,7 +84,7 @@ import {
   writeMeshQualityReport,
 } from 'rig-c/mesh';
 import { type AutoRegionSpec, type AutoSpec, type AutoWeightRegionSpec, type Point, weightsABone } from './config.ts';
-import { type ContourMesh, contourMesh, type ContourReport, GRID } from './contour.ts';
+import { type ContourChainRibs, type ContourMesh, contourMesh, type ContourReport, GRID } from './contour.ts';
 import { type HeatField, heatInfluences } from './heat.ts';
 import type { Problem } from './errors.ts';
 import { type LocalInfluence, localInfluences, type RegionOverlap } from './localweights.ts';
@@ -168,8 +168,12 @@ export function refinementRegion(rg: AutoRegionSpec, ox: number, oy: number): Re
  */
 export const AUTO_SOURCE_FIT_CONNECTIVITY = 8;
 
-/** The source of one automatic mesh: the contour mesh at alpha 1 and above, gated by `contourMesh` with its overshoot read at {@link AUTO_SOURCE_FIT_CONNECTIVITY}, or every problem that refuses it. */
-export function autoSource(part: string, mask: AlphaMask, spec: AutoSpec): ContourMesh | Problem[] {
+/**
+ * The source of one automatic mesh: the contour mesh at alpha 1 and above, gated by `contourMesh` with its overshoot
+ * read at {@link AUTO_SOURCE_FIT_CONNECTIVITY}, or every problem that refuses it. `ribs` (issue #188) are placed on
+ * it as the contour mode places them, at `source.spacing`; none, and the call is the one it always was.
+ */
+export function autoSource(part: string, mask: AlphaMask, spec: AutoSpec, ribs: readonly ContourChainRibs[] = []): ContourMesh | Problem[] {
   return contourMesh(part, mask, {
     threshold: AUTO_THRESHOLD - 1,
     tolerance: spec.source.tolerance,
@@ -178,8 +182,17 @@ export function autoSource(part: string, mask: AlphaMask, spec: AutoSpec): Conto
     ...(spec.source.stray === undefined ? {} : { stray: spec.source.stray }),
     regions: [],
     fitConnectivity: AUTO_SOURCE_FIT_CONNECTIVITY,
+    ...(ribs.length === 0 ? {} : { ribs }),
   });
 }
+
+/**
+ * The bound every rib's line is sent with (issue #188), drawing px: 0. A rib's vertices are all in `protect.vertices`,
+ * so none is removed and the bound is never what keeps one; the line is sent for what rig-c's `lines` add besides
+ * (rig-c 2.33.0, docs/MESH_REDUCTION.md §11): the triangulation post-pass flips no line edge, so the row stays a row of
+ * edges in the result, and the result's measurement carries one `MQ_LINE_DEVIATION` row per rib, by its name.
+ */
+export const RIB_LINE_DEVIATION = 0;
 
 /**
  * The source's weights by bone name, unrounded, or the first vertex two regions both reach. Only the regions
@@ -236,6 +249,11 @@ export function autoReductionInput(args: {
   const h = mask.height;
   const regions = spec.regions ?? [];
   const protect = spec.protect ?? {};
+  // issue #188: every rib vertex is kept — the author's protected vertices first, as written, then each rib vertex not
+  // among them, ascending. No rib, and the list is the author's.
+  const ribs = source.ribs ?? [];
+  const kept: number[] = [...(protect.vertices ?? [])];
+  for (const v of [...new Set(ribs.flatMap((r) => r.vertices))].sort((a, b) => a - b)) if (!kept.includes(v)) kept.push(v);
   const guarded: string[] = [...(protect.influences ?? [])];
   // A density-only region names no bone and guards none (issue #155).
   for (const rg of regions) if (weightsABone(rg) && !guarded.includes(rg.bone)) guarded.push(rg.bone);
@@ -260,7 +278,7 @@ export function autoReductionInput(args: {
     },
     protect: {
       hull: protect.hull ?? false,
-      vertices: [...(protect.vertices ?? [])],
+      vertices: kept,
       edges: (protect.edges ?? []).map(([a, b]) => [a, b] as [number, number]),
       regionBoundaries: [...(protect.regionBoundaries ?? [])],
       weightJump: protect.weightJump ?? null,
@@ -278,6 +296,7 @@ export function autoReductionInput(args: {
     ...(spec.boundaryRuns === undefined ? {} : { boundaryRuns: { maxVertices: spec.boundaryRuns.maxVertices } }),
     ...(spec.retriangulate === undefined ? {} : { retriangulate: spec.retriangulate }),
     ...(spec.removalOrder === undefined ? {} : { removalOrder: spec.removalOrder }),
+    ...(ribs.length === 0 ? {} : { lines: ribs.map((r) => ({ name: r.name, vertices: [...r.vertices], closed: false, maxDeviation: RIB_LINE_DEVIATION })) }),
   };
 }
 

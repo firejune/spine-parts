@@ -245,6 +245,31 @@ export interface ContourParams {
    * AUTO_SOURCE_FIT_CONNECTIVITY} in `src/automesh.ts`).
    */
   fitConnectivity?: 4 | 8;
+  /**
+   * The chains a row of vertices is placed across, at each link joint and at
+   * `stations` points between (issue #188; {@link placeRibs}). Absent or empty
+   * places none, and the mesh is byte for byte the one it was before the field
+   * existed.
+   */
+  ribs?: readonly ContourChainRibs[];
+}
+
+/**
+ * One chain the ribs are placed along (issue #188): its link origins then its
+ * tip, in part-image px, as the config declares them less the part's offset —
+ * link k runs from `points[k]` to `points[k + 1]` — and the stations per link.
+ */
+export interface ContourChainRibs {
+  chain: string;
+  points: ReadonlyArray<readonly [number, number]>;
+  /** Ribs between a link's origin and its end, evenly spaced; a whole number, 0 or more. */
+  stations: number;
+}
+
+/** One rib as placed (issue #188): its name and its vertices, in mesh vertex indices, from one end across to the other. */
+export interface ContourRib {
+  name: string;
+  vertices: number[];
 }
 
 /** A triangle and a figure measured on it, by its index in `triangles`. */
@@ -303,6 +328,8 @@ export interface ContourReport {
   pinchFilledPixels: number;
   /** Transparent pixels the grown silhouette encloses without holding them (a notch the growth closed), which the trace fills — rigc's `holePixels` of that trace. Not the art's own holes, which are `filledHolePixels`. */
   grownHolePixels: number;
+  /** Only when ribs were declared (issue #188): every rib, in placement order, with its vertices. Absent otherwise, so a mesh without ribs reports what it always reported. */
+  ribs?: ContourRib[];
 }
 
 export interface ContourMesh {
@@ -318,6 +345,8 @@ export interface ContourMesh {
    * was left out it is the input mask itself, the same object, so nothing downstream of a part without stray moves.
    */
   mask: AlphaMask;
+  /** Only when ribs were declared (issue #188): the report's list, the same objects. */
+  ribs?: ContourRib[];
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +385,7 @@ function parameterProblems(part: string, mask: AlphaMask, p: ContourParams): Pro
   if (p.budget !== undefined && (!Number.isInteger(p.budget) || p.budget < 3)) bad('budget', `is ${p.budget}; a whole number of vertices, 3 or more, is required`);
   if (p.fitConnectivity !== undefined && p.fitConnectivity !== 4 && p.fitConnectivity !== 8) bad('fitConnectivity', `is ${JSON.stringify(p.fitConnectivity)}; 4 or 8 is required (how the background is flooded when overshoot is measured)`);
   if (p.stray !== undefined && (!Number.isInteger(p.stray) || p.stray < 0)) bad('stray', `is ${p.stray}; a whole number of art pixels, 0 or more, is required (the largest island that may be left out)`);
+  ribProblems(part, p, out);
   const names = new Set<string>();
   p.regions.forEach((r, i) => {
     const at = `regions[${i}]`;
@@ -711,7 +741,7 @@ export function outlineInRegions(outline: ReadonlyArray<readonly [number, number
  * an outline in grid units. Exact: inside by the crossing rule on integers,
  * distances compared squared, in `BigInt` where a product could pass 2^53.
  */
-export function keepPoints(hx: readonly number[], hy: readonly number[], candidates: readonly Candidate[]): Candidate[] {
+export function keepPoints(hx: readonly number[], hy: readonly number[], candidates: readonly Candidate[], ribs: ReadonlyArray<readonly [number, number, number, number]> = []): Candidate[] {
   const kept: Candidate[] = [];
   const n = hx.length;
   for (const c of candidates) {
@@ -719,6 +749,8 @@ export function keepPoints(hx: readonly number[], hy: readonly number[], candida
     if (!insideRing(c.x, c.y, hx, hy)) continue;
     let ok = true;
     for (let i = 0; i < n && ok; i++) ok = farFromSegment(c.x, c.y, hx[i], hy[i], hx[(i + 1) % n], hy[(i + 1) % n], r2);
+    // issue #188: a rib is held like the outline — no candidate within its keep radius of one, so nothing sits on a rib's row.
+    for (let i = 0; i < ribs.length && ok; i++) ok = farFromSegment(c.x, c.y, ribs[i][0], ribs[i][1], ribs[i][2], ribs[i][3], r2);
     for (let k = 0; k < kept.length && ok; k++) {
       const dx = c.x - kept[k].x;
       const dy = c.y - kept[k].y;
@@ -727,6 +759,283 @@ export function keepPoints(hx: readonly number[], hy: readonly number[], candida
     if (ok) kept.push(c);
   }
   return kept;
+}
+
+// ---------------------------------------------------------------------------
+// ribs along a chain (issue #188)
+// ---------------------------------------------------------------------------
+
+/**
+ * The declared ribs' own problems, before anything is traced: the shape of
+ * each entry (`CONTOUR_PARAMETER`), and each link that cannot carry a rib
+ * (`CONTOUR_RIB_LINK`) — one shorter than the outline's `tolerance` (or of no
+ * length), where a row would sit within the outline's own simplification error
+ * of the next, and a joint where the chain turns straight back on itself,
+ * which has no direction across it.
+ */
+function ribProblems(part: string, p: ContourParams, out: Problem[]): void {
+  const object = `contour mesh "${part}"`;
+  const names = new Set<string>();
+  (p.ribs ?? []).forEach((rb, i) => {
+    const at = `${object}, ribs[${i}]`;
+    if (typeof rb.chain !== 'string' || rb.chain === '' || names.has(rb.chain)) {
+      out.push({ code: 'CONTOUR_PARAMETER', object: `${at}.chain`, detail: `is ${JSON.stringify(rb.chain)}; a chain name, non-empty and given once, is required` });
+    } else names.add(rb.chain);
+    if (!Number.isInteger(rb.stations) || rb.stations < 0) out.push({ code: 'CONTOUR_PARAMETER', object: `${at}.stations`, detail: `is ${rb.stations}; a whole number, 0 or more, is required (the ribs between a link's origin and its end)` });
+    const pts = rb.points;
+    if (!Array.isArray(pts) || pts.length < 2 || !pts.every((q) => Array.isArray(q) && q.length === 2 && finite(q[0]) && finite(q[1]))) {
+      out.push({ code: 'CONTOUR_PARAMETER', object: `${at}.points`, detail: `has ${Array.isArray(pts) ? pts.length : 'no'} point(s); the chain's points and its tip, 2 or more finite [x, y] pairs, are required` });
+      return;
+    }
+    const unit: Array<[number, number]> = [];
+    for (let k = 0; k + 1 < pts.length; k++) {
+      const dx = pts[k + 1][0] - pts[k][0];
+      const dy = pts[k + 1][1] - pts[k][1];
+      const len = Math.sqrt(dx * dx + dy * dy);
+      unit.push(len > 0 ? [dx / len, dy / len] : [0, 0]);
+      if (!(len > 0) || len < p.tolerance) {
+        out.push({
+          code: 'CONTOUR_RIB_LINK',
+          object: `${object}, chain "${rb.chain}" link ${k}`,
+          detail: `runs ${len} px from (${pts[k][0]}, ${pts[k][1]}) to ${k + 2 < pts.length ? `points[${k + 1}]` : 'the tip'} (${pts[k + 1][0]}, ${pts[k + 1][1]}); a link longer than 0 and at least the outline tolerance ${p.tolerance} px (contour.tolerance, or auto.source.tolerance) is required — a row of vertices closer than that to the next sits inside the outline's own simplification error`,
+        });
+      }
+    }
+    for (let k = 1; k < unit.length; k++) {
+      if (unit[k - 1][0] + unit[k][0] === 0 && unit[k - 1][1] + unit[k][1] === 0 && (unit[k][0] !== 0 || unit[k][1] !== 0)) {
+        out.push({ code: 'CONTOUR_RIB_LINK', object: `${object}, chain "${rb.chain}" link ${k}`, detail: `turns straight back along link ${k - 1} at (${pts[k][0]}, ${pts[k][1]}), so the joint has no direction across it; a chain that does not fold back on itself is required` });
+      }
+    }
+  });
+}
+
+/** Do the closed segments a–b and c–d (grid units) meet — cross or touch? Exact: orientations of grid integers. */
+function segmentsMeet(ax: number, ay: number, bx: number, by: number, cx: number, cy: number, dx: number, dy: number): boolean {
+  const o1 = Math.sign(orient(ax, ay, bx, by, cx, cy));
+  const o2 = Math.sign(orient(ax, ay, bx, by, dx, dy));
+  const o3 = Math.sign(orient(cx, cy, dx, dy, ax, ay));
+  const o4 = Math.sign(orient(cx, cy, dx, dy, bx, by));
+  if (o1 * o2 < 0 && o3 * o4 < 0) return true;
+  const on = (px: number, py: number, qx: number, qy: number, rx: number, ry: number): boolean => Math.min(px, qx) <= rx && rx <= Math.max(px, qx) && Math.min(py, qy) <= ry && ry <= Math.max(py, qy);
+  return (o1 === 0 && on(ax, ay, bx, by, cx, cy)) || (o2 === 0 && on(ax, ay, bx, by, dx, dy)) || (o3 === 0 && on(cx, cy, dx, dy, ax, ay)) || (o4 === 0 && on(cx, cy, dx, dy, bx, by));
+}
+
+/** Where the ribs went (issue #188): the outline with their ends on it, their interior points, and their rows. */
+export interface RibPlacement {
+  /** The outline (px) with every rib's two ends inserted on the edge each lands on. */
+  outline: Array<[number, number]>;
+  /** The ribs' interior points, grid units, in rib order: they are the first interior vertices, from index `outline.length`. */
+  points: Candidate[];
+  /** Each rib's segment from end to end, grid units: no other interior point is kept within its keep radius of one. */
+  segments: Array<[number, number, number, number]>;
+  /** Each rib's vertices, end to end, in the mesh's vertex indices. */
+  ribs: ContourRib[];
+}
+
+/**
+ * The ribs of every declared chain (issue #188): a row of vertices across the
+ * part at each link joint and at `stations` points between, placed on the
+ * outline the mode traced. **The rule**, in part-image px (y down):
+ *
+ * 1. **Where.** Link k runs from `points[k]` to `points[k + 1]` (the last to
+ *    the tip). Each link carries a rib at its origin (station 0) and at
+ *    `points[k] + m/(stations + 1) · (points[k + 1] − points[k])`, m =
+ *    1..stations — so a chain of L links carries L × (stations + 1) ribs, in
+ *    chain order, then link, then station. The tip carries none: it is the
+ *    strand's end, which the outline already holds.
+ * 2. **Across.** The rib's direction d is the link's at a station and at the
+ *    chain's root; at a joint between two links it is the sum of the two
+ *    links' unit directions, the bisector of the bend. The rib is the line
+ *    through the point along n = (−d_y, d_x) / |d|.
+ * 3. **Clipped to the art.** The point must be on the part's art — its pixel
+ *    (the floor of each coordinate) has alpha above the threshold — and
+ *    strictly inside the outline (`CONTOUR_RIB_ART` otherwise: a rib that
+ *    leaves the art entirely). From it the line runs both ways to the first
+ *    point where it meets the outline (an edge or a vertex); those two points,
+ *    snapped to the {@link GRID}, are the rib's ends. The outline is the art
+ *    at the mode's threshold, holes filled, grown by the margin and simplified
+ *    at the tolerance; a rib's ends are on it because a vertex off it would be
+ *    no part of the mesh's boundary.
+ * 4. **The ends join the outline.** Each end is inserted between the two ends
+ *    of the outline edge it lands on (in order along the edge), or is that
+ *    edge's vertex when it snaps onto one. Snapping moves an end off its edge
+ *    by at most half a grid unit, 1/512 px; the outline is then held to every
+ *    check it always was (self-intersection here, coverage and overshoot on the
+ *    mesh), so a move that mattered is refused, not hidden.
+ * 5. **Between the ends**, at the mode's background spacing s: the rib's own
+ *    point (the joint or the station, snapped to the grid) is an interior
+ *    vertex, and each half — from an end to the point — of length ℓ is cut
+ *    into k = max(1, ⌈ℓ / s⌉) equal parts, whose k − 1 cuts, each snapped,
+ *    are interior vertices too. So the joint itself is on its row, where the
+ *    two links' weights meet. Each must lie inside the outline at least one
+ *    grid unit from every outline edge (`CONTOUR_RIB_ART` otherwise).
+ * 6. **No two ribs meet** — cross, touch or share an end, ends as snapped
+ *    (`CONTOUR_RIB_CROSSING`, naming both): two rows through one point are no
+ *    longer two cross-sections.
+ *
+ * The triangulation then makes every consecutive pair of a rib an edge and
+ * never flips it ({@link Triangulation.constrain}), and keeps every other
+ * interior point at least its keep radius from every rib ({@link keepPoints}),
+ * so each rib is a row of edges across the strand. Nothing here reads a weight.
+ */
+export function placeRibs(part: string, outline: ReadonlyArray<readonly [number, number]>, mask: AlphaMask, art: Mask, params: ContourParams): RibPlacement | Problem[] {
+  const object = `contour mesh "${part}"`;
+  const out: Problem[] = [];
+  const n = outline.length;
+  const hx = outline.map((q) => snap(q[0]));
+  const hy = outline.map((q) => snap(q[1]));
+  interface Hit { edge: number; u: number; x: number; y: number }
+  interface Planned { name: string; qx: number; qy: number; lo: Hit; hi: Hit }
+  const planned: Planned[] = [];
+  for (const rb of params.ribs ?? []) {
+    const P = rb.points;
+    const unit = (k: number): [number, number] => {
+      const dx = P[k + 1][0] - P[k][0];
+      const dy = P[k + 1][1] - P[k][1];
+      const len = Math.sqrt(dx * dx + dy * dy);
+      return [dx / len, dy / len];
+    };
+    for (let k = 0; k + 1 < P.length; k++) {
+      for (let m = 0; m <= rb.stations; m++) {
+        const name = `rib ${rb.chain} link ${k} station ${m}`;
+        let qx: number;
+        let qy: number;
+        let dx: number;
+        let dy: number;
+        if (m === 0) {
+          [qx, qy] = [P[k][0], P[k][1]];
+          if (k === 0) [dx, dy] = unit(0);
+          else {
+            const a = unit(k - 1);
+            const b = unit(k);
+            [dx, dy] = [a[0] + b[0], a[1] + b[1]];
+          }
+        } else {
+          const t = m / (rb.stations + 1);
+          [qx, qy] = [P[k][0] + (P[k + 1][0] - P[k][0]) * t, P[k][1] + (P[k + 1][1] - P[k][1]) * t];
+          [dx, dy] = unit(k);
+        }
+        const dl = Math.sqrt(dx * dx + dy * dy);
+        const nx = -dy / dl;
+        const ny = dx / dl;
+        const px = Math.floor(qx);
+        const py = Math.floor(qy);
+        const inWindow = px >= 0 && py >= 0 && px < art.width && py < art.height;
+        const onArt = inWindow && art.data[py * art.width + px] !== 0;
+        if (!onArt || !insideRing(snap(qx), snap(qy), hx, hy)) {
+          out.push({
+            code: 'CONTOUR_RIB_ART',
+            object: `${object}, ${name}`,
+            detail: `${m === 0 ? (k === 0 ? "the chain's root" : 'the joint') : `station ${m} of the link`} is at (${qx}, ${qy}) in the part image (${inWindow ? `pixel (${px}, ${py}), alpha ${mask.alpha[py * art.width + px]}` : `outside its ${art.width}x${art.height} px`})${onArt ? ', on the art but not inside the outline' : `, not art (alpha above ${params.threshold})`}; a rib is the part's cross-section through the chain, so its point must lie on the part's art, inside the outline — move the chain onto the part, or leave the chain "${rb.chain}" out of ribs`,
+          });
+          continue;
+        }
+        let lo: Hit | null = null;
+        let hi: Hit | null = null;
+        let loS = -Infinity;
+        let hiS = Infinity;
+        for (let i = 0; i < n; i++) {
+          const [ax, ay] = outline[i];
+          const [bx, by] = outline[(i + 1) % n];
+          const ex = bx - ax;
+          const ey = by - ay;
+          const den = nx * ey - ny * ex;
+          if (den === 0) continue;
+          const wx = ax - qx;
+          const wy = ay - qy;
+          const s = (wx * ey - wy * ex) / den;
+          const u = (wx * ny - wy * nx) / den;
+          if (u < 0 || u > 1 || s === 0) continue;
+          if (s > 0 && s < hiS) [hiS, hi] = [s, { edge: i, u, x: snap(qx + s * nx), y: snap(qy + s * ny) }];
+          if (s < 0 && s > loS) [loS, lo] = [s, { edge: i, u, x: snap(qx + s * nx), y: snap(qy + s * ny) }];
+        }
+        if (lo === null || hi === null) {
+          out.push({ code: 'CONTOUR_RIB_ART', object: `${object}, ${name}`, detail: `the line across the chain at (${qx}, ${qy}) meets the outline on ${lo === null && hi === null ? 'neither side' : 'one side only'}; a point inside the outline is required` });
+          continue;
+        }
+        planned.push({ name, qx: snap(qx), qy: snap(qy), lo, hi });
+      }
+    }
+  }
+  if (out.length > 0) return out;
+  for (let i = 0; i < planned.length; i++) {
+    for (let j = i + 1; j < planned.length; j++) {
+      const a = planned[i];
+      const b = planned[j];
+      if (segmentsMeet(a.lo.x, a.lo.y, a.hi.x, a.hi.y, b.lo.x, b.lo.y, b.hi.x, b.hi.y)) {
+        out.push({
+          code: 'CONTOUR_RIB_CROSSING',
+          object: `${object}, ${a.name}`,
+          detail: `from (${a.lo.x / GRID}, ${a.lo.y / GRID}) to (${a.hi.x / GRID}, ${a.hi.y / GRID}) meets ${b.name}, from (${b.lo.x / GRID}, ${b.lo.y / GRID}) to (${b.hi.x / GRID}, ${b.hi.y / GRID}); ribs that cross, touch or share an end are required to be apart — two rows through one point are not two cross-sections (fewer stations, or a chain that bends less sharply inside a wide part)`,
+        });
+      }
+    }
+  }
+  if (out.length > 0) return out;
+
+  // The ends onto the outline, edge by edge, in order along each edge (rib, then the lo end first, at a tie).
+  const onEdge: Array<Array<{ u: number; x: number; y: number; rib: number; side: 0 | 1 }>> = Array.from({ length: n }, () => []);
+  planned.forEach((r, k) => {
+    onEdge[r.lo.edge].push({ u: r.lo.u, x: r.lo.x, y: r.lo.y, rib: k, side: 0 });
+    onEdge[r.hi.edge].push({ u: r.hi.u, x: r.hi.x, y: r.hi.y, rib: k, side: 1 });
+  });
+  const next: Array<[number, number]> = [];
+  const start: number[] = [];
+  const endAt = planned.map(() => [-1, -1]);
+  const toNext: Array<{ rib: number; side: 0 | 1; edge: number }> = [];
+  for (let i = 0; i < n; i++) {
+    start.push(next.length);
+    next.push([outline[i][0], outline[i][1]]);
+    const list = onEdge[i].sort((p, q) => p.u - q.u || p.rib - q.rib || p.side - q.side);
+    for (const e of list) {
+      const j = (i + 1) % n;
+      if (e.x === hx[i] && e.y === hy[i]) endAt[e.rib][e.side] = start[i];
+      else if (e.x === hx[j] && e.y === hy[j]) toNext.push({ rib: e.rib, side: e.side, edge: j });
+      else {
+        endAt[e.rib][e.side] = next.length;
+        next.push([e.x / GRID, e.y / GRID]);
+      }
+    }
+  }
+  for (const t of toNext) endAt[t.rib][t.side] = start[t.edge];
+  if (signedArea(next) <= 0 || findSelfIntersection(next) !== null) {
+    const c = findSelfIntersection(next);
+    return [{ code: 'CONTOUR_SELF_INTERSECTION', object, detail: `with the ribs' ends put on it, its outline ${c === null ? 'encloses no positive area' : `edge ${c[0]} meets edge ${c[1]}`}; an outline that touches itself nowhere is required — each end moves at most 1/512 px off its edge, so fewer stations or a lower tolerance` }];
+  }
+  const H = next.length;
+  const nx = next.map((q) => snap(q[0]));
+  const ny = next.map((q) => snap(q[1]));
+  const points: Candidate[] = [];
+  const segments: Array<[number, number, number, number]> = [];
+  const ribs: ContourRib[] = [];
+  const radius = keepRadius(params.spacing);
+  planned.forEach((r, k) => {
+    const vertices = [endAt[k][0]];
+    // The rib's own point, then each half cut at the spacing: lo end -> point -> hi end, every cut snapped.
+    const along: Array<[number, number]> = [];
+    const half = (ax: number, ay: number, bx: number, by: number, last: boolean): void => {
+      const parts = Math.max(1, Math.ceil(Math.sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay)) / GRID / params.spacing));
+      for (let j = 1; j < parts; j++) along.push([Math.round(ax + ((bx - ax) * j) / parts), Math.round(ay + ((by - ay) * j) / parts)]);
+      if (!last) along.push([bx, by]);
+    };
+    half(r.lo.x, r.lo.y, r.qx, r.qy, false);
+    half(r.qx, r.qy, r.hi.x, r.hi.y, true);
+    along.forEach(([x, y], j) => {
+      let ok = insideRing(x, y, nx, ny);
+      for (let i = 0; i < H && ok; i++) ok = farFromSegment(x, y, nx[i], ny[i], nx[(i + 1) % H], ny[(i + 1) % H], 1);
+      if (!ok) {
+        out.push({ code: 'CONTOUR_RIB_ART', object: `${object}, ${r.name}`, detail: `its point ${j + 1} of ${along.length} between the ends, (${x / GRID}, ${y / GRID}), is outside the outline or within 1/${GRID} px of it; every point between a rib's ends inside the outline is required` });
+        return;
+      }
+      vertices.push(H + points.length);
+      points.push({ x, y, radius, source: 'ribs' });
+    });
+    vertices.push(endAt[k][1]);
+    segments.push([r.lo.x, r.lo.y, r.hi.x, r.hi.y]);
+    ribs.push({ name: r.name, vertices });
+  });
+  if (out.length > 0) return out;
+  return { outline: next, points, segments, ribs };
 }
 
 // ---------------------------------------------------------------------------
@@ -742,6 +1051,8 @@ export function keepPoints(hx: readonly number[], hy: readonly number[], candida
 class Triangulation {
   readonly tri: number[] = [];
   private readonly owner = new Map<number, number>();
+  /** Edges never flipped, beside the outline's (issue #188: the ribs' rows), by their smaller-index-first key. */
+  private readonly locked = new Set<number>();
 
   constructor(
     readonly X: readonly number[],
@@ -754,6 +1065,56 @@ class Triangulation {
 
   get count(): number {
     return this.tri.length / 3;
+  }
+
+  /** Is the undirected edge a–b one {@link constrain} locked? */
+  isLocked(a: number, b: number): boolean {
+    return this.locked.size > 0 && this.locked.has(this.key(Math.min(a, b), Math.max(a, b)));
+  }
+
+  /** Lock the undirected edge a–b, so no flip ever removes it. */
+  lock(a: number, b: number): void {
+    this.locked.add(this.key(Math.min(a, b), Math.max(a, b)));
+  }
+
+  /**
+   * Make a–b an edge of the triangulation and lock it (issue #188). While it
+   * is not one, the first interior edge in triangle order that crosses the
+   * open segment a–b strictly (exact orientations) and whose two triangles form
+   * a strictly convex quad is flipped (Sloan's edge recovery). Requires that
+   * no vertex lies on the open segment, which the rib rule ensures: every
+   * other interior point is kept its keep radius off a rib, and a rib's ends
+   * are the outline's first contact on each side. Returns false, without
+   * locking, when no crossing edge can be flipped or `limit` flips pass first.
+   */
+  constrain(a: number, b: number, limit: number): boolean {
+    for (let step = 0; step <= limit; step++) {
+      if (this.ownerOf(a, b) !== undefined || this.ownerOf(b, a) !== undefined) {
+        this.lock(a, b);
+        return true;
+      }
+      let flipped = false;
+      for (let t = 0; t < this.count && !flipped; t++) {
+        for (let k = 0; k < 3; k++) {
+          const u = this.tri[3 * t + k];
+          const v = this.tri[3 * t + ((k + 1) % 3)];
+          if (u === a || u === b || v === a || v === b) continue;
+          const o = this.ownerOf(v, u);
+          if (o === undefined || o < t || this.isLocked(u, v)) continue;
+          const s1 = Math.sign(this.orient(a, b, u)) * Math.sign(this.orient(a, b, v));
+          const s2 = Math.sign(this.orient(u, v, a)) * Math.sign(this.orient(u, v, b));
+          if (s1 >= 0 || s2 >= 0) continue;
+          const c = this.third(t, u);
+          const d = this.third(o, v);
+          if (!(this.orient(u, d, c) > 0 && this.orient(v, c, d) > 0)) continue;
+          this.flip(t, o, u, v, c, d);
+          flipped = true;
+          break;
+        }
+      }
+      if (!flipped) return false;
+    }
+    return false;
   }
 
   ownerOf(a: number, b: number): number | undefined {
@@ -827,6 +1188,7 @@ class Triangulation {
       const t = this.ownerOf(x, y);
       const u = this.ownerOf(y, x);
       if (t === undefined || u === undefined) continue; // an outline edge: never flipped
+      if (this.isLocked(x, y)) continue; // a rib's edge (issue #188): never flipped
       if (this.third(t, x) !== p) continue; // the edge was flipped away since it was pushed
       const d = this.third(u, y);
       if (!this.illegal(x, y, p, d)) continue;
@@ -845,7 +1207,7 @@ class Triangulation {
           const a = this.tri[3 * t + k];
           const b = this.tri[3 * t + ((k + 1) % 3)];
           const u = this.ownerOf(b, a);
-          if (u === undefined || u < t) continue;
+          if (u === undefined || u < t || this.isLocked(a, b)) continue;
           const c = this.third(t, a);
           const d = this.third(u, b);
           if (!this.illegal(a, b, c, d)) continue;
@@ -867,7 +1229,7 @@ class Triangulation {
         const a = this.tri[3 * t + k];
         const b = this.tri[3 * t + ((k + 1) % 3)];
         const u = this.ownerOf(b, a);
-        if (u === undefined || u < t) continue;
+        if (u === undefined || u < t || this.isLocked(a, b)) continue;
         const { X, Y } = this;
         const c = this.third(t, a);
         const d = this.third(u, b);
@@ -925,12 +1287,14 @@ class Triangulation {
  * each triangle is read in the order that is clockwise on screen — the order
  * the triangulation's predicates are written for — whichever way it is listed:
  * the module's output (counter-clockwise in Spine world) and a list wound as
- * the outline read the same.
+ * the outline read the same. A `constrained` edge (issue #188: a rib's) is
+ * not asked, as an outline edge is not: it is kept whatever its circle holds.
  */
-export function delaunayViolations(vertices: ReadonlyArray<readonly [number, number]>, triangles: readonly number[]): number {
+export function delaunayViolations(vertices: ReadonlyArray<readonly [number, number]>, triangles: readonly number[], constrained: ReadonlyArray<readonly [number, number]> = []): number {
   const X = vertices.map((v) => snap(v[0]));
   const Y = vertices.map((v) => snap(v[1]));
   const mesh = new Triangulation(X, Y);
+  for (const [a, b] of constrained) mesh.lock(a, b);
   for (let t = 0; t < triangles.length; t += 3) {
     const [a, b, c] = [triangles[t], triangles[t + 1], triangles[t + 2]];
     if (orient(X[a], Y[a], X[b], Y[b], X[c], Y[c]) < 0) mesh.set(t / 3, a, c, b);
@@ -1403,22 +1767,42 @@ export function contourMesh(part: string, mask: AlphaMask, params: ContourParams
   const stage = contourOutline(part, filled, threshold, tolerance, margin);
   if (Array.isArray(stage)) return stage;
   const { grown } = stage;
-  const outline = outlineInRegions(stage.outline, params.regions);
+  let outline = outlineInRegions(stage.outline, params.regions);
+  // issue #188: the ribs' ends join the outline, and their interior points come first among the interior vertices.
+  // None declared, nothing here runs and every list below is the one it always was.
+  let ribs: RibPlacement | null = null;
+  if ((params.ribs ?? []).length > 0) {
+    const placed = placeRibs(part, outline, meshed, island, params);
+    if (Array.isArray(placed)) return placed;
+    ribs = placed;
+    outline = placed.outline;
+  }
+  const held = ribs?.points ?? [];
 
   const hx = outline.map((q) => snap(q[0]));
   const hy = outline.map((q) => snap(q[1]));
   // A candidate outside the part window cannot be inside the outline (clamped to it), and dropping it first keeps
   // every coordinate the predicates see within the window — the exactness bound.
-  const kept = keepPoints(hx, hy, interiorCandidates(w, h, params).filter((c) => c.x >= 0 && c.y >= 0 && c.x <= w * GRID && c.y <= h * GRID));
-  const X = [...hx, ...kept.map((c) => c.x)];
-  const Y = [...hy, ...kept.map((c) => c.y)];
+  const kept = keepPoints(hx, hy, interiorCandidates(w, h, params).filter((c) => c.x >= 0 && c.y >= 0 && c.x <= w * GRID && c.y <= h * GRID), ribs?.segments ?? []);
+  const X = [...hx, ...held.map((c) => c.x), ...kept.map((c) => c.x)];
+  const Y = [...hy, ...held.map((c) => c.y), ...kept.map((c) => c.y)];
   const H = outline.length;
 
   const mesh = new Triangulation(X, Y);
   const ears = earClip(outline);
   for (let t = 0; t < ears.length; t += 3) mesh.set(t / 3, ears[t], ears[t + 1], ears[t + 2]);
   mesh.legalizeAll();
-  for (let k = 0; k < kept.length; k++) mesh.insert(H + k);
+  for (let k = 0; k < held.length + kept.length; k++) mesh.insert(H + k);
+  const ribEdges: Array<[number, number]> = [];
+  for (const rib of ribs?.ribs ?? []) {
+    for (let k = 0; k + 1 < rib.vertices.length; k++) {
+      const [a, b] = [rib.vertices[k], rib.vertices[k + 1]];
+      ribEdges.push([a, b]);
+      if (!mesh.constrain(a, b, mesh.count * mesh.count)) {
+        return [{ code: 'CONTOUR_RIB_EDGE', object: `${object}, ${rib.name}`, detail: `its vertices ${a} and ${b} could not be joined by an edge — no edge crossing the segment between them could be flipped; a rib whose consecutive vertices the triangulation can join is required` }];
+      }
+    }
+  }
   mesh.legalizeAll();
 
   const vertices = X.map((x, i) => [x / GRID, Y[i] / GRID] as [number, number]);
@@ -1430,7 +1814,7 @@ export function contourMesh(part: string, mask: AlphaMask, params: ContourParams
     problems.push({
       code: 'CONTOUR_BUDGET',
       object,
-      detail: `has ${vertices.length} vertices (${H} on the outline, ${kept.length} inside); the declared budget is ${params.budget} — nothing is thinned to fit, so raise the spacing or the tolerance, or the budget`,
+      detail: `has ${vertices.length} vertices (${H} on the outline, ${held.length + kept.length} inside); the declared budget is ${params.budget} — nothing is thinned to fit, so raise the spacing or the tolerance, or the budget`,
     });
   }
   if (problems.length > 0) return problems;
@@ -1439,15 +1823,17 @@ export function contourMesh(part: string, mask: AlphaMask, params: ContourParams
   for (const r of params.regions) bySource.set(`region "${r.name}"`, 0);
   bySource.set('background', 0);
   for (const c of kept) bySource.set(c.source, (bySource.get(c.source) as number) + 1);
+  if (ribs !== null) bySource.set('ribs', held.length);
   const meshArea = unitsToPx2(twiceAreaUnits(hx, hy));
   return {
     vertices,
     triangles,
     hull: H,
     mask: meshed,
+    ...(ribs === null ? {} : { ribs: ribs.ribs }),
     report: {
       boundaryVertices: H,
-      interiorVertices: kept.length,
+      interiorVertices: held.length + kept.length,
       interiorBySource: [...bySource].map(([source, n]) => ({ source, vertices: n })),
       triangles: triangles.length / 3,
       tracedVertices: stage.tracedVertices,
@@ -1461,12 +1847,13 @@ export function contourMesh(part: string, mask: AlphaMask, params: ContourParams
       enclosedTransparentArea: meshArea - fit.coveredArt,
       filledHolePixels,
       ...triangleQuality(vertices, triangles),
-      nonDelaunayEdges: delaunayViolations(vertices, triangles),
+      nonDelaunayEdges: delaunayViolations(vertices, triangles, ribEdges),
       strayIslands: split.leave.length,
       strayPixels,
       grownPixels: grown.grownPixels,
       pinchFilledPixels: grown.pinchFilledPixels,
       grownHolePixels: stage.grownHolePixels,
+      ...(ribs === null ? {} : { ribs: ribs.ribs }),
     },
   };
 }
