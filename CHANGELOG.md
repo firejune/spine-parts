@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/firejune/rig-parts/compare/v1.4.0...v1.5.0) (2026-10-11)
+
+
+### Features
+
+* **generate:** a control skeleton from a pose file, beside the two built-in standing poses ([#206](https://github.com/firejune/rig-parts/issues/206)) ([f9eec2d](https://github.com/firejune/rig-parts/commit/f9eec2d2d174dd74cc46a47ff50b1f519e42cb0e))
+
 ## [1.4.0](https://github.com/firejune/rig-parts/compare/v1.3.0...v1.4.0) (2026-10-11)
 
 
