@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0](https://github.com/firejune/rig-parts/compare/v1.3.0...v1.4.0) (2026-10-11)
+
+
+### Features
+
+* **assemble:** an authored image of what lies under a cut piece, filled into the base where the cut removed its pixels ([#193](https://github.com/firejune/rig-parts/issues/193)) ([#200](https://github.com/firejune/rig-parts/issues/200)) ([00eea54](https://github.com/firejune/rig-parts/commit/00eea54d50e430ca41ccdd211f5158db5d5e9ee5))
+* **compose:** a per-character scale beside the offset ([#205](https://github.com/firejune/rig-parts/issues/205)) ([60f6ee0](https://github.com/firejune/rig-parts/commit/60f6ee09127a91b5c0e9ba79546822fc55c05e7c))
+
+
+### Bug Fixes
+
+* **check:** the seam gate says where — each pair of parts, its boxes and a picture of the pixels it counted ([#204](https://github.com/firejune/rig-parts/issues/204)) ([2b75dfb](https://github.com/firejune/rig-parts/commit/2b75dfb6376ed13b75a0a9e8b426d013483ba228))
+
 ## [1.3.0](https://github.com/firejune/rig-parts/compare/v1.2.0...v1.3.0) (2026-10-10)
 
 
