@@ -2,7 +2,9 @@
  * The painting, generated on a ComfyUI box from the config's inline
  * `generation` block: `painting_<seed>.png` and `painting_<seed>_meta.json`
  * per seed, and `control_<skeleton>.png` when the config asks for structural
- * control.
+ * control — `<skeleton>` is the built-in's name, or for a pose file (issue
+ * #198) `pose-` and the first 12 hex digits of the image's sha256, so two pose
+ * files drawn at one size never share a name on the box.
  *
  * The words and the graph are `src/graphs.ts` (`buildPrompts`,
  * `paintingGraph`) and the skeleton is `src/skeleton.ts`; this file carries
@@ -24,18 +26,21 @@
  * the config never reaches the meta), the elapsed seconds and the prompt id —
  * never the host.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { PaintConfig } from '../config.ts';
+import type { ControlPose, PaintConfig } from '../config.ts';
 import { type Problem, refuseIfAny } from '../errors.ts';
 import { buildPrompts, checkGraph, paintingGraph, resolvedControl, resolvedLoras, resolvedSampler } from '../graphs.ts';
 import { decodePngBytes, encodePngBytes } from '../raster/png.ts';
-import { renderSkeleton } from '../skeleton.ts';
+import { isSkeletonName, renderSkeleton } from '../skeleton.ts';
 import { ComfyClient, historyImages, refuse } from './client.ts';
 
 export interface PaintRun {
-  /** Read through `loadEarlyConfig(path, 'paint')`, which has already required and checked `generation`. */
+  /** Read through `loadPaintConfig(path)`, which has already required and checked `generation`. */
   config: PaintConfig;
+  /** The pose file `generation.control.skeleton` names, as `loadPaintConfig` read it; null for a built-in or no control. */
+  pose: ControlPose | null;
   out: string;
   seeds: number;
   seed0: number;
@@ -64,18 +69,19 @@ export async function runPainting(client: ComfyClient, run: PaintRun, say: (line
 
   await client.systemStats();
   const control = g.control === undefined ? null : resolvedControl(g.control);
-  const skeletonName = control === null ? null : `spine_parts_${control.skeleton}_${w}x${h}.png`;
+  const drawn = control === null ? null : controlImage(control.skeleton, run.pose, w, h);
+  const skeletonName = drawn === null ? null : `spine_parts_${drawn.label}_${w}x${h}.png`;
   const probe = paintingGraph(g, seeds[0], prompts, `spine_parts_${run.config.key}_${seeds[0]}`, skeletonName);
   refuseIfAny(checkGraph(probe, await client.objectInfo(), client.host, new Set(['30.image'])));
   say('  box: every node, input and model of the painting graph is on its /object_info');
 
   mkdirSync(run.out, { recursive: true });
   let skeletonRef: string | null = null;
-  if (control !== null && skeletonName !== null) {
-    const png = encodePngBytes(renderSkeleton(control.skeleton, w, h));
-    writeFileSync(join(run.out, `control_${control.skeleton}.png`), png);
-    skeletonRef = await client.uploadImage(png, skeletonName);
-    say(`  control: ${control.skeleton} skeleton at ${w}x${h} -> ${join(run.out, `control_${control.skeleton}.png`)}, uploaded as input/${skeletonRef}; ${control.model} strength ${control.strength} end ${control.end_percent}`);
+  if (control !== null && drawn !== null && skeletonName !== null) {
+    const local = join(run.out, `control_${drawn.label}.png`);
+    writeFileSync(local, drawn.png);
+    skeletonRef = await client.uploadImage(drawn.png, skeletonName);
+    say(`  control: ${drawn.from} at ${w}x${h} -> ${local}, uploaded as input/${skeletonRef}; ${control.model} strength ${control.strength} end ${control.end_percent}`);
   }
 
   const done: Painted[] = [];
@@ -118,4 +124,13 @@ export async function runPainting(client: ComfyClient, run: PaintRun, say: (line
     done.push({ seed, file, elapsed, size: [img.width, img.height] });
   }
   return done;
+}
+
+/** The control image for a built-in skeleton or the pose file read beside the config, with the name it is written and uploaded under. */
+function controlImage(skeleton: string, pose: ControlPose | null, w: number, h: number): { png: Uint8Array; label: string; from: string } {
+  if (isSkeletonName(skeleton)) return { png: encodePngBytes(renderSkeleton(skeleton, w, h)), label: skeleton, from: `${skeleton} skeleton` };
+  // loadPaintConfig reads the file a non-built-in skeleton names, or refuses; a run without it skipped the loader.
+  if (pose === null) throw new Error(`runPainting: generation.control.skeleton names the pose file "${skeleton}" and no pose was read; load the config through loadPaintConfig`);
+  const png = encodePngBytes(renderSkeleton(pose.points, w, h));
+  return { png, label: `pose-${createHash('sha256').update(png).digest('hex').slice(0, 12)}`, from: `pose file ${pose.file}` };
 }

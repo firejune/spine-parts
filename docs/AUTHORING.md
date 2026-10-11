@@ -75,6 +75,7 @@ read by no CPU stage).
 | --- | --- | --- |
 | `key` | every stage's report | authored; the examples use the directory name |
 | `generation.*` | the optional `comfy` adapter only; no CPU stage | recorded: checkpoint, LoRAs, sampler, prompt parts, `latent`, `seed`, `control` |
+| `generation.control.skeleton` | `comfy paint` — the OpenPose control image, drawn at `latent` | **authored**: a built-in standing pose, `"stand_sides"` or `"stand_clasp"`, or (issue #198) any other string, read as a path relative to the config file's directory to a pose file `{"width": W, "height": H, "points": {"nose": [x, y], "neck": [x, y], …}}` — `width` x `height` is the canvas and must be `generation.latent` (the points are not scaled; `CONFIG_POSE_CANVAS`), and `points` holds the 18 body-18 keypoints of `src/skeleton.ts` by name (`nose`, `neck`, `r_shoulder`, `r_elbow`, `r_wrist`, `l_shoulder`, `l_elbow`, `l_wrist`, `r_hip`, `r_knee`, `r_ankle`, `l_hip`, `l_knee`, `l_ankle`, `r_eye`, `l_eye`, `r_ear`, `l_ear`; `r`/`l` the subject's sides), each `[x, y]` in canvas px, x right, y down, `0 <= x <= W`, `0 <= y <= H`. The image is drawn from the file exactly as from a built-in (same renderer, same size), written as `control_pose-<first 12 hex of its sha256>.png`. A pose file carries no words, so `generation.pose` is required beside it (`CONFIG_FIELD_PRESENT`). The file is read wherever the config is read from a path, every problem at once: no such file — a misspelt built-in lands here too — or one that cannot be read (`CONFIG_FILE_PRESENT`), not JSON (`CONFIG_IS_JSON`), not an object, a size that is not a whole positive px count, a point that is not two numbers (`CONFIG_FIELD_TYPE`), a key besides the three (`CONFIG_KEY_KNOWN`) or written twice (`CONFIG_KEY_UNIQUE`), `points` holding other than the 18 names (`CONFIG_POSE_KEYPOINTS`, with the count found and required), a point off the canvas (`CONFIG_POSE_IN_CANVAS`, naming the point and the canvas size) |
 | `seethrough.resolution` | assemble — each run's canvas must be `resolution` square (`ASSEMBLE_RUN_CANVAS`) | recorded from the See-through runs; 1024 in both examples |
 | `seethrough.steps`, `.seed`, `.offload` | no CPU stage | recorded from the runs |
 | `seethrough.head_box` | inputs (cuts the head image there; optional at the first call); assemble — where the head run sits on the painting | **proposed** by `propose --head-box` from the full run, square, source pixels, shifted inside the painting when needed; the head run must then be fed exactly that crop |
@@ -151,7 +152,11 @@ swing, hair of another shape, whether an accessory swings — is yours to add, a
 **A posed figure: `propose --keypoints`.** The proposer's ratios assume a
 standing figure: the hip below the chest, sleeves hanging from the shoulders. A
 seated, reclining or otherwise posed figure is told where its joints are with one
-explicit file (issue #75, `src/keypoints.ts`):
+explicit file (issue #75, `src/keypoints.ts`). A pose file named by
+`generation.control.skeleton` is not that file and is not offered as its default:
+the control skeleton is what was asked of the model, not where the joints ended up
+(a consumer measured a generated picture not following the control's raised hand),
+so `keypoints.json` is read off the generated picture:
 
 ```json
 {
@@ -1553,6 +1558,7 @@ See-through with another seed.
 | `COMFY_HISTORY_OUTPUTS`, `COMFY_VIEW_PRESENT`, `COMFY_MANIFEST_NAMED`, `COMFY_MANIFEST_IS_THIS_RUN`, `COMFY_LAYER_NAME` | the job's outputs are missing, unreadable, belong to another run, or name a layer that is not a plain file name | the wrapper's version on the box; report it |
 | `COMFY_IMAGE_PRESENT`, `COMFY_OUT_EMPTY`, `COMFY_OUT_FREE` | no `--image`, an `--out` that already holds files, or a seed whose painting is already on disk | `--image`, `--out`, `--seed0` |
 | `CONFIG_FIELD_PRESENT` on `config.generation`, `COMFY_PAINTING_SIZE` | `comfy paint` was given a config with no `generation` block (the line names the fields it holds), or the painting that came back is not twice the latent | `config.generation` |
+| `CONFIG_POSE_CANVAS`, `CONFIG_POSE_KEYPOINTS`, `CONFIG_POSE_IN_CANVAS` | the pose file `generation.control.skeleton` names states another canvas than `generation.latent`, holds other than the 18 body-18 keypoints, or puts one off its canvas | the pose file (§3, the `generation.control.skeleton` row) |
 
 ### assemble
 

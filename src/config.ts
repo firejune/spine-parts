@@ -73,6 +73,7 @@ import { dirname, resolve } from 'node:path';
 import { RIG_SKIN_CONSTRAINT_KEYS, type RigConstraint, type RigSkinConstraintKey } from 'rig-c/src/rig.ts';
 import { GRID, MAX_SIDE } from './contour.ts';
 import { type Problem, refuseIfAny } from './errors.ts';
+import { isSkeletonName, KEYPOINT_NAMES, type KeypointName, type PosePoints, SKELETON_NAMES, type SkeletonName } from './skeleton.ts';
 import { acceptedTagNames, readTag } from './tags.ts';
 
 export type Point = [number, number];
@@ -91,7 +92,12 @@ export interface Sampler {
 }
 
 export interface Control {
-  skeleton: 'stand_sides' | 'stand_clasp';
+  /**
+   * A built-in skeleton's name, or the path of a pose file relative to the
+   * config's directory (issue #198; {@link readControlPose} reads it). A
+   * string that is not a built-in name is a path.
+   */
+  skeleton: SkeletonName | string;
   strength: number;
   end_percent: number;
   model?: string;
@@ -882,6 +888,11 @@ export function parseEarlyConfig(raw: Json, door: 'paint'): PaintConfig;
 export function parseEarlyConfig(raw: Json, door: 'layers'): EarlyConfig;
 export function parseEarlyConfig(raw: Json, door: 'assemble'): AssembleConfig;
 export function parseEarlyConfig(raw: Json, door: EarlyDoor): PaintConfig | EarlyConfig | AssembleConfig {
+  return parseEarlyConfigFrom(raw, door, null).config;
+}
+
+/** The early loader with, when `base` is the config's directory, the pose file `generation.control.skeleton` names read beside it. */
+function parseEarlyConfigFrom(raw: Json, door: EarlyDoor, base: string | null): { config: PaintConfig | EarlyConfig | AssembleConfig; pose: ControlPose | null } {
   const c = new Check();
   // `generation` is taken out of the generic presence check so its absence can
   // say what the block has to hold, rather than only that it is missing.
@@ -910,18 +921,129 @@ export function parseEarlyConfig(raw: Json, door: EarlyDoor): PaintConfig | Earl
     if ('seethrough' in t) checkSeeThrough(c, t.seethrough);
     if ('assemble' in t) checkAssemble(c, t.assemble, door);
   }
+  const pose = base === null ? null : poseBeside(c, t.generation, base);
   refuseIfAny(c.problems);
-  return raw as PaintConfig | EarlyConfig | AssembleConfig;
+  return { config: raw as PaintConfig | EarlyConfig | AssembleConfig, pose };
 }
 
 export function loadEarlyConfig(path: string, door: 'paint'): PaintConfig;
 export function loadEarlyConfig(path: string, door: 'layers'): EarlyConfig;
 export function loadEarlyConfig(path: string, door: 'assemble'): AssembleConfig;
 export function loadEarlyConfig(path: string, door: EarlyDoor): PaintConfig | EarlyConfig | AssembleConfig {
-  const raw = readConfigFile(path);
-  if (door === 'paint') return parseEarlyConfig(raw, 'paint');
-  if (door === 'layers') return parseEarlyConfig(raw, 'layers');
-  return parseEarlyConfig(raw, 'assemble');
+  return parseEarlyConfigFrom(readConfigFile(path), door, dirname(resolve(path))).config;
+}
+
+/**
+ * `comfy paint`'s loader: the `paint` door, and the pose file
+ * `generation.control.skeleton` names read beside the config (issue #198).
+ * `pose` is null when the control is a built-in skeleton or absent.
+ */
+export function loadPaintConfig(path: string): { config: PaintConfig; pose: ControlPose | null } {
+  const { config, pose } = parseEarlyConfigFrom(readConfigFile(path), 'paint', dirname(resolve(path)));
+  return { config: config as PaintConfig, pose };
+}
+
+/** The pose file a checked `generation` block's control names, read relative to `base`; null for a built-in, an absent control, or a block already refused. */
+function poseBeside(c: Check, gen: Json, base: string): ControlPose | null {
+  if (!isPlainObject(gen) || !isPlainObject(gen.control)) return null;
+  const skel = gen.control.skeleton;
+  if (typeof skel !== 'string' || skel === '' || isSkeletonName(skel)) return null;
+  const l = gen.latent;
+  const latent = Array.isArray(l) && l.length === 2 && l.every((n) => typeof n === 'number' && Number.isInteger(n) && n > 0) ? ([l[0], l[1]] as [number, number]) : null;
+  return readControlPose(c, resolve(base, skel), latent);
+}
+
+/**
+ * Read the pose file `generation.control.skeleton` names (issue #198), every
+ * problem collected in `c`. The file is the built-ins' shape, stated by its
+ * fields: `{"width": W, "height": H, "points": {"nose": [x, y], …}}` — the
+ * canvas the points are in, which is `generation.latent` (the control image is
+ * drawn at the latent size and the points are not scaled), and the 18 body-18
+ * keypoints by name, each `[x, y]` in that canvas's pixels, x right, y down.
+ *
+ * - `CONFIG_FILE_PRESENT`: no such file, or one that cannot be read — the
+ *   detail names the built-ins too, since a misspelt built-in lands here.
+ * - `CONFIG_IS_JSON`: the text does not parse.
+ * - `CONFIG_FIELD_TYPE` / `CONFIG_KEY_KNOWN` / `CONFIG_FIELD_PRESENT`: not an
+ *   object; a key besides the three (and the annotation and record doors);
+ *   one of the three absent; a size that is not a whole positive pixel count;
+ *   a point that is not two finite numbers.
+ * - `CONFIG_KEY_UNIQUE`: a key written twice (`JSON.parse` keeps the last).
+ * - `CONFIG_POSE_CANVAS`: `width` x `height` is not `generation.latent`.
+ * - `CONFIG_POSE_KEYPOINTS`: `points` holds another count than the 18, or a
+ *   name that is not body-18; the found and required counts and the names.
+ * - `CONFIG_POSE_IN_CANVAS`: a point outside `0 <= x <= width`, `0 <= y <=
+ *   height` (continuous canvas coordinates, the edges inside, as
+ *   `src/keypoints.ts` reads a joint), named with the canvas size.
+ *
+ * Returns the pose when this file added no problem, else null.
+ */
+function readControlPose(c: Check, file: string, latent: [number, number] | null): ControlPose | null {
+  const field = 'config.generation.control.skeleton';
+  const shape = `${SKELETON_NAMES.map((n) => `"${n}"`).join(' or ')}, or a pose file {"width": W, "height": H, "points": {"nose": [x, y], …the 18 body-18 keypoints}} at a path relative to the config's directory, is required`;
+  if (!existsSync(file) || !statSync(file).isFile()) {
+    c.fail('CONFIG_FILE_PRESENT', field, `names ${file}, which is neither a built-in skeleton nor a file; ${shape}`);
+    return null;
+  }
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (err) {
+    c.fail('CONFIG_FILE_PRESENT', field, `names ${file}, which cannot be read: ${(err as Error).message}; ${shape}`);
+    return null;
+  }
+  let raw: Json;
+  try {
+    raw = JSON.parse(text);
+  } catch (err) {
+    c.fail('CONFIG_IS_JSON', `${field} (${file})`, `does not parse as JSON: ${(err as Error).message}`);
+    return null;
+  }
+  const before = c.problems.length;
+  const at = `${field} (${file})`;
+  for (const r of repeatedKeys(text)) {
+    c.fail('CONFIG_KEY_UNIQUE', `${at}${r.at === '' ? '' : `.${r.at}`}`, `names "${r.key}" ${r.count === 2 ? 'twice' : `${r.count} times`}; each key once is required — JSON keeps only the last, so every value but the last would be dropped without a word`);
+  }
+  const o = c.object(at, raw, ['width', 'height', 'points'], []);
+  if (o === null) return null;
+  const w = 'width' in o && c.int(`${at}.width`, o.width, 1) ? o.width : null;
+  const h = 'height' in o && c.int(`${at}.height`, o.height, 1) ? o.height : null;
+  if (w !== null && h !== null && latent !== null && (w !== latent[0] || h !== latent[1])) {
+    c.fail('CONFIG_POSE_CANVAS', at, `states a ${w}x${h} canvas; generation.latent's ${latent[0]}x${latent[1]} is required — the control image is drawn at the latent size and the points are read in its pixels, not scaled`);
+  }
+  const points = {} as Record<KeypointName, readonly [number, number]>;
+  if ('points' in o) {
+    const pts = o.points;
+    if (!isPlainObject(pts)) {
+      c.fail('CONFIG_FIELD_TYPE', `${at}.points`, `is ${show(pts)}; an object of the 18 body-18 keypoints by name, each [x, y], is required`);
+    } else {
+      const names = Object.keys(pts);
+      const missing = KEYPOINT_NAMES.filter((k) => !(k in pts));
+      const unknown = names.filter((k) => !(KEYPOINT_NAMES as readonly string[]).includes(k));
+      if (missing.length > 0 || unknown.length > 0) {
+        c.fail(
+          'CONFIG_POSE_KEYPOINTS',
+          `${at}.points`,
+          `holds ${names.length} keypoint(s); the ${KEYPOINT_NAMES.length} body-18 keypoints are required, each once (${KEYPOINT_NAMES.join(', ')})${missing.length > 0 ? ` — missing: ${missing.join(', ')}` : ''}${unknown.length > 0 ? ` — not body-18: ${unknown.join(', ')}` : ''}`,
+        );
+      }
+      for (const k of KEYPOINT_NAMES) {
+        if (!(k in pts)) continue;
+        const v = pts[k];
+        if (!(Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === 'number' && Number.isFinite(n)))) {
+          c.fail('CONFIG_FIELD_TYPE', `${at}.points.${k}`, `is ${show(v)}; a point [x, y] in canvas pixels is required`);
+          continue;
+        }
+        const [x, y] = v as [number, number];
+        if (w !== null && h !== null && !(x >= 0 && x <= w && y >= 0 && y <= h)) {
+          c.fail('CONFIG_POSE_IN_CANVAS', `${at}.points.${k}`, `is [${x}, ${y}]; a point inside the ${w}x${h} canvas is required, 0 <= x <= ${w} and 0 <= y <= ${h}`);
+        }
+        points[k] = [x, y];
+      }
+    }
+  }
+  if (c.problems.length > before) return null;
+  return { file, points };
 }
 
 /**
@@ -951,6 +1073,7 @@ function parseConfigFrom(raw: Json, base: string | null): { config: CharacterCon
   if ('constraints' in t) checkConstraints(c, t.constraints, names.bones, names.parents);
   const from = isPlainObject(t.motion) ? t.motion.animations_from : undefined;
   const animations = base !== null && typeof from === 'string' && from !== '' ? readAnimationsFrom(c, resolve(base, from)) : null;
+  if (base !== null) poseBeside(c, t.generation, base);
   refuseIfAny(c.problems);
   return { config: raw as CharacterConfig, animations };
 }
@@ -1164,6 +1287,17 @@ function checkBlinkStill(c: Check, v: Json, eyes: Json, bones: Set<string>, regi
   }
 }
 
+/**
+ * A pose file `generation.control.skeleton` names, as read (issue #198): its
+ * 18 body-18 keypoints, in the pixels of the `generation.latent` canvas the
+ * file states, drawn as given.
+ */
+export interface ControlPose {
+  /** The file, resolved against the config's directory. */
+  file: string;
+  points: PosePoints;
+}
+
 /** The fields every generation block carries; `pose` or `control` is required besides, checked below. */
 const GENERATION_REQUIRED = ['checkpoint', 'loras', 'trigger', 'identity', 'sampler', 'costume', 'negative_extra', 'style', 'negative_pose', 'latent', 'seed'] as const;
 
@@ -1202,8 +1336,11 @@ function checkGeneration(c: Check, v: Json): void {
   if ('control' in g) {
     const k = c.object(`${p}.control`, g.control, ['skeleton', 'strength', 'end_percent'], ['model']);
     if (k !== null) {
-      if ('skeleton' in k && k.skeleton !== 'stand_sides' && k.skeleton !== 'stand_clasp') {
-        c.fail('CONFIG_FIELD_TYPE', `${p}.control.skeleton`, `is ${show(k.skeleton)}; "stand_sides" or "stand_clasp" is required`);
+      if ('skeleton' in k && (typeof k.skeleton !== 'string' || k.skeleton === '')) {
+        c.fail('CONFIG_FIELD_TYPE', `${p}.control.skeleton`, `is ${show(k.skeleton)}; ${SKELETON_NAMES.map((n) => `"${n}"`).join(' or ')}, or the path of a pose file relative to the config's directory, is required`);
+      } else if ('skeleton' in k && !isSkeletonName(k.skeleton) && !('pose' in g)) {
+        // A pose file is points only; the built-ins' words are theirs, and none is guessed for a file.
+        c.fail('CONFIG_FIELD_PRESENT', `${p}.pose`, `is absent, and generation.control.skeleton names a pose file (${show(k.skeleton)}), which carries no words; the pose words are required from generation.pose`);
       }
       if ('strength' in k) c.number(`${p}.control.strength`, k.strength, 'non-negative');
       if ('end_percent' in k) c.number(`${p}.control.end_percent`, k.end_percent, 'unit');

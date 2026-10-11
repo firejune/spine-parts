@@ -104,6 +104,7 @@ part name, `[i]` an entry of a list):
 - **generation.loras[i]** — required: `name`, `strength`; optional: `strength_clip`
 - **generation.sampler** — required: `steps`, `cfg`, `sampler`, `scheduler`
 - **generation.control** — required: `skeleton`, `strength`, `end_percent`; optional: `model`
+- **generation.control.skeleton**, the pose file it names when it is no built-in — required: `width`, `height`, `points`
 - **seethrough** — required: `resolution`, `steps`, `seed`, `offload`; optional: `head_box`
 - **assemble** — required: `rig_scale`, `plan` (from plain `assemble` on); optional: `extend_below_crop`, `patches`, `cuts`
 - **assemble.extend_below_crop[i]** — required: `part`, `run`, `tag`

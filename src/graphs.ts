@@ -30,7 +30,7 @@
  */
 import type { Control, Generation, Lora, Sampler } from './config.ts';
 import type { Problem } from './errors.ts';
-import { SKELETONS } from './skeleton.ts';
+import { isSkeletonName, SKELETONS } from './skeleton.ts';
 
 export const POSITIVE_HEAD = 'score_9, score_8_up, score_7_up, source_anime, masterpiece, best quality, highly detailed';
 export const NEGATIVE_HEAD =
@@ -65,9 +65,10 @@ export function stripWords(text: string, words: readonly string[] = DUP_WORDS): 
 
 export function poseWords(g: Pick<Generation, 'pose' | 'control'>): { words: string; from: string } {
   if (g.pose !== undefined) return { words: g.pose, from: 'generation.pose' };
-  if (g.control !== undefined) return { words: `${FRAMING}, ${SKELETONS[g.control.skeleton].words}`, from: `the ${g.control.skeleton} skeleton` };
-  // parseConfig refuses this case; reaching it means a config that skipped the loader.
-  throw new Error('poseWords: generation has neither pose nor control; load the config through parseConfig');
+  if (g.control !== undefined && isSkeletonName(g.control.skeleton)) return { words: `${FRAMING}, ${SKELETONS[g.control.skeleton].words}`, from: `the ${g.control.skeleton} skeleton` };
+  // parseConfig refuses both other cases — no pose and no control, and a pose file (which carries no words, issue #198)
+  // with no pose; reaching here means a config that skipped the loader.
+  throw new Error('poseWords: generation has neither pose nor a built-in control skeleton; load the config through parseConfig');
 }
 
 export interface Prompts {

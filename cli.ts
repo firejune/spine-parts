@@ -19,7 +19,7 @@ import { DEFAULT_PROJECT_RULE, DEFAULT_SEAM_RULE, HOLES_LISTED, PROJECT_RULES, t
 import { assembleStage, build, checkStage, ERROR_MAP_FILE, loopStage, readRuns, readSource, rigStage } from './src/build.ts';
 import { DEFAULT_PACK_SHAPE, DEFAULT_PAGE_EDGES, findRigc, PACK_SHAPES, type PackShape, PAGE_EDGES, type PageEdges, PARTS_HOME_SENTENCE, RIGC_GEOMETRY_VERSION, type RigcRunner, NO_PARTS_SENTENCE, SEAM_MEAN_BAR, SOURCE_SENTENCE, SEAM_PX_BAR, SEAM_PX_LEVEL, SPINEBOY_YARDSTICK, TEXTURE_STRETCH_CEILING } from './src/check.ts';
 import { ComfyClient, resolveHost, runPainting, runSeeThrough } from './src/comfy/index.ts';
-import { type CharacterConfig, loadConfig, loadEarlyConfig } from './src/config.ts';
+import { type CharacterConfig, loadConfig, loadEarlyConfig, loadPaintConfig } from './src/config.ts';
 import { PartsError, problemLine } from './src/errors.ts';
 import { proposeHeadBox } from './src/headbox.ts';
 import { makeInputs } from './src/inputs.ts';
@@ -1000,7 +1000,8 @@ async function cmdComfy(args: string[]): Promise<number> {
   try {
     // The config is a local file, so it is answered before any host is: a
     // config comfy paint cannot paint from is refused with no box named.
-    const cfg = sub === 'paint' ? loadEarlyConfig(configPath as string, 'paint') : null;
+    const paint = sub === 'paint' ? loadPaintConfig(configPath as string) : null;
+    const cfg = paint === null ? null : paint.config;
     const host = resolveHost(v.get('--host'), process.env.COMFY_HOST);
     const client = new ComfyClient(host, { poll: poll as number, request: 30 });
     if (sub === 'seethrough') {
@@ -1039,7 +1040,7 @@ async function cmdComfy(args: string[]): Promise<number> {
     if (typeof seed0 === 'string') return usage(seed0);
     console.log(`rig-parts comfy paint: ${cfg.key} -> ${out}`);
     console.log(`  ${seeds} seed(s) from ${seed0}${v.has('--seed0') ? '' : ' (generation.seed)'}; wait <= ${wait} s per seed, timeout ${timeout} s`);
-    const done = await runPainting(client, { config: cfg, out, seeds, seed0, wait: wait as number, timeout: timeout as number }, (l) => console.log(l));
+    const done = await runPainting(client, { config: cfg, pose: paint === null ? null : paint.pose, out, seeds, seed0, wait: wait as number, timeout: timeout as number }, (l) => console.log(l));
     console.log(`  wrote ${done.length} painting(s): ${done.map((d) => `${d.file} ${d.size[0]}x${d.size[1]} in ${d.elapsed.toFixed(1)} s`).join(', ')}; GPU job(s) ended`);
     return EXIT_OK;
   } catch (err) {
