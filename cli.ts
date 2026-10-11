@@ -205,7 +205,7 @@ usage:
       rounding, and so is the per-frame mesh work (AUTHORING §5).
   rig-parts check --rig <dir> --out <dir> [--parts <dir>] [--source <painting.png>]
                     [--page-edges pot|free] [--pack-shape rect|polygon]
-                    [--requirements <file.json>]
+                    [--requirements <file.json>] [--seam-pairs]
       Build, gate, render and measure a rig through rig-c's CLI (the rigc at
       node_modules/.bin/rigc, or on PATH). --rig holds rig.json and motion.json:
       a rig spec, which rigc build compiles, not a compiled skeleton.json.
@@ -222,7 +222,11 @@ usage:
       entry that gated the build, and pack_mode, the two pack flags). PASS needs every gate summary
       "0 failed", the seam (setup pose vs the flat composite of parts/) at mean
       |d| <= ${SEAM_MEAN_BAR.toFixed(1)} with <= ${SEAM_PX_BAR} px over ${SEAM_PX_LEVEL}, and the loop (idle frame 0 vs the
-      frame at t = duration) at max |d| 0. Then six judgement lines, each in
+      frame at t = duration) at max |d| 0. A failing seam, or any seam under
+      --seam-pairs, is split by the pair of parts each counted pixel lies
+      between: one "seam pair" line each, worst first, with its count, frame
+      and rig boxes and a picture under seam/, and check.json's seam_pairs
+      (AUTHORING §7). Then six judgement lines, each in
       check.json and on the console as NAME: PASS|FAIL|SKIP with its figures and
       bars (AUTHORING §7): BREATH_VISIBLE (the topwear moves, the footwear does
       not, each rendered alone), BLINK_NO_HOLE (the setup pose with the blink
@@ -688,7 +692,15 @@ function flags(args: string[], known: readonly string[], command: string, option
 }
 
 function cmdCheck(args: string[]): number {
-  const f = flags(args, ['--rig', '--out'], 'check', ['--parts', '--source', '--page-edges', '--pack-shape', '--requirements']);
+  // The one switch check takes (issue #202): it carries no value, so it is taken out before the valued flags are read.
+  const seamPairs = args.filter((a) => a === '--seam-pairs').length;
+  if (seamPairs > 1) return usage('--seam-pairs is given twice');
+  const f = flags(
+    args.filter((a) => a !== '--seam-pairs'),
+    ['--rig', '--out'],
+    'check',
+    ['--parts', '--source', '--page-edges', '--pack-shape', '--requirements'],
+  );
   if (typeof f === 'string') return usage(f);
   const rig = f.get('--rig') as string;
   const out = f.get('--out') as string;
@@ -698,7 +710,12 @@ function cmdCheck(args: string[]): number {
   if (!isPackShape(shape)) return usage(shape);
   try {
     const bin = findRigc(import.meta.dir, process.env.PATH ?? '');
-    const r = checkStage({ rig, parts: f.get('--parts'), source: f.get('--source'), out, pageEdges: edges, packShape: shape, requirements: f.get('--requirements') }, rigcRunner(bin), bin, console.log);
+    const r = checkStage(
+      { rig, parts: f.get('--parts'), source: f.get('--source'), out, pageEdges: edges, packShape: shape, requirements: f.get('--requirements'), seamPairs: seamPairs === 1 },
+      rigcRunner(bin),
+      bin,
+      console.log,
+    );
     return r.figures.PASS ? EXIT_OK : EXIT_REFUSED;
   } catch (err) {
     return printRefusal(err);

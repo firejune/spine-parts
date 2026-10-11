@@ -70,7 +70,7 @@ import {
   splitSchedule,
   untestedIntervals,
 } from './autoreplay.ts';
-import { BARS, besideIdleLine, causeLines, REQUIREMENTS_DIR, type CheckReport, type PackLine, DEFAULT_PACK_SHAPE, DEFAULT_PAGE_EDGES, JUDGEMENT_LINES, type JudgementLine, packedBuildArgs, packedBuildLabel, type PackMode, type PackShape, type PageEdges, readFrameSet, REPORTED_LINES, type ReportedLine, type RigcRunner, runCheck, SEAM_MEAN_BAR, SOURCE_LINE, SEAM_PX_BAR, SEAM_PX_LEVEL, SEAM_PX_LEVEL_HIGH, SPINEBOY_YARDSTICK } from './check.ts';
+import { BARS, besideIdleLine, causeLines, REQUIREMENTS_DIR, type CheckReport, type PackLine, DEFAULT_PACK_SHAPE, DEFAULT_PAGE_EDGES, JUDGEMENT_LINES, type JudgementLine, packedBuildArgs, packedBuildLabel, type PackMode, type PackShape, type PageEdges, readFrameSet, REPORTED_LINES, type ReportedLine, type RigcRunner, runCheck, SEAM_DIR, SEAM_MEAN_BAR, seamPairText, SOURCE_LINE, SEAM_PX_BAR, SEAM_PX_LEVEL, SEAM_PX_LEVEL_HIGH, SPINEBOY_YARDSTICK } from './check.ts';
 import { type Cut, loadConfig, loadConfigAndAnimations, loadEarlyConfig } from './config.ts';
 import { PartsError, type Problem, problemLine, refuseIfAny } from './errors.ts';
 import type { MeshQualityReport, MotionSchedule } from 'rig-c/mesh';
@@ -837,6 +837,12 @@ export interface CheckStageInput {
   packShape?: PackShape;
   /** The scene's declared requirements (`--requirements`, issue #93); absent, nothing is read, written or printed for them. */
   requirements?: string;
+  /**
+   * `check --seam-pairs` (issue #202): split the seam's counted pixels by pair
+   * and draw each pair's picture even when the bar passes. A failing seam is
+   * always split; absent and passing, nothing is written or printed for it.
+   */
+  seamPairs?: boolean;
 }
 
 /**
@@ -900,7 +906,7 @@ export function checkStage(input: CheckStageInput, rigc: RigcRunner, bin: string
   const entryLine = versionLines.find((l) => l.startsWith('entry:'));
   log(`  rigc ${versionLines[0]} at ${bin}${entryLine === undefined ? '' : `; ${entryLine}`}`);
   const mode: PackMode = { pageEdges: input.pageEdges ?? DEFAULT_PAGE_EDGES, packShape: input.packShape ?? DEFAULT_PACK_SHAPE };
-  const r = runCheck(input.rig, input.out, rigc, input.parts, mode, input.source, input.requirements);
+  const r = runCheck(input.rig, input.out, rigc, input.parts, mode, input.source, input.requirements, input.seamPairs === true);
   log(`  gate spine-html (rigc ${packedBuildLabel(mode)}), verbatim:`);
   for (const l of r.gateHtml) log(l);
   for (const l of packLines(r)) log(`  ${l}`);
@@ -916,6 +922,8 @@ export function checkStage(input: CheckStageInput, rigc: RigcRunner, bin: string
       `  seam: setup pose at ${r.seamViewport.pixelWidth}x${r.seamViewport.pixelHeight}, scale ${r.seamViewport.scale.toFixed(4)}: mean |d| ${fig.seam_mean} (<= ${SEAM_MEAN_BAR.toFixed(1)}), ` +
         `${fig.seam_px_over_40} px over ${SEAM_PX_LEVEL} (<= ${SEAM_PX_BAR}), ${fig.seam_px_over_80} px over ${SEAM_PX_LEVEL_HIGH} (reported)`,
     );
+    const pairs = fig.seam_pairs ?? [];
+    pairs.forEach((row, i) => log(`  seam pair ${i + 1} of ${pairs.length}: ${seamPairText(row)}`));
   }
   for (const name of JUDGEMENT_LINES) log(`  ${judgementLine(name, fig[name])}`);
   for (const name of REPORTED_LINES) log(`  ${judgementLine(name, fig[name])}`);
@@ -926,7 +934,7 @@ export function checkStage(input: CheckStageInput, rigc: RigcRunner, bin: string
     log(`  ${summaryText(r.requirements.summary)}`);
   }
   log(`  gate: spine-html ${fig.gate_spine_html_green ? 'green' : 'RED'} (${fig.rigc_entry.entry}${fig.rigc_entry.spine_core === null ? ', rigc\'s own validator' : `, the spine-core ${fig.rigc_entry.spine_core} round trip`})`);
-  log(`  wrote ${r.written.map((w) => join(input.out, w)).join(', ')}, ${join(input.out, 'build')}/${r.idle === null ? '' : `, ${join(input.out, 'idle_frames')}/`}${r.requirements === null ? '' : `, ${join(input.out, REQUIREMENTS_DIR)}/`}`);
+  log(`  wrote ${r.written.map((w) => join(input.out, w)).join(', ')}, ${join(input.out, 'build')}/${r.idle === null ? '' : `, ${join(input.out, 'idle_frames')}/`}${r.requirements === null ? '' : `, ${join(input.out, REQUIREMENTS_DIR)}/`}${fig.seam_pairs === undefined ? '' : `, ${join(input.out, SEAM_DIR)}/`}`);
   for (const p of r.problems) log(`  FAIL  ${problemLine(p)}`);
   const reqNotPass = r.requirements === null ? 0 : r.requirements.summary.declared - r.requirements.summary.pass;
   const notMet = r.requirements === null ? `${r.problems.length} bar(s) not met` : `${r.problems.length - reqNotPass} bar(s) not met, ${reqNotPass} declared requirement(s) not PASS`;

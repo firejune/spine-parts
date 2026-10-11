@@ -148,7 +148,7 @@ import {
   stageFields,
   visibilityCounts,
 } from './src/assemble.ts';
-import { maxRgbDiff, withoutPhysics } from './src/check.ts';
+import { maxRgbDiff, SEAM_BOX, SEAM_DIR, SEAM_MARK, SEAM_NO_ART, type SeamFigures, seamPairRows, seamPairText, withoutPhysics } from './src/check.ts';
 import { BARS, besideIdleLine, blackRig, buildGateLines, causeLines, chainLine, measuredRules, SOURCE_LINE, sourceFigures, sourceSizeProblem, packedBuildArgs, DEFAULT_PACK_MODE, DEFAULT_PAGE_EDGES, findRigc, type PackMode, type PageEdges, type FrameSet, GEOMETRY_FILE, gateGreen, headBoneOf, IDLE_MAX_PX, type JudgementLine, JUDGEMENT_LINES, packEdgeProblems, PARTS_HOME_SENTENCE, parsePackLines, readBoneTrack, readCheckInputs, readFrameSet, readGeometry, readRigcEntry, REPORTED_LINES, requireRigcVersion, RIGC_ENTRY_VERSION, RIGC_GEOMETRY_VERSION, rigcFailed, type RigcRunner, runCheck, SPINEBOY_YARDSTICK, stretchLine, TEXTURE_STRETCH_CEILING, TIP_RATIO_FLOOR, attachmentPoses, stillLine, STILL_INSTRUMENT } from './src/check.ts';
 import { blinkFigures, type BoneWorld, frameBox, halfTravels, lagStep, readSine, setupToFrame, stillReading, stillTolerance, STILL_ROUNDINGS, ulpOf } from './src/instruments.ts';
 import {
@@ -6977,6 +6977,136 @@ function runCheckSuite(): number {
       seam.status === 1 && sl !== null && sf !== null && sl.includes(`mean |d| ${String(sf.seam_mean)}/255`) && sl.includes(`${String(sf.seam_px_over_40)} px over`) && sf.loop_max_diff === 0 && sf.gate_spine_html_green === true,
       `exit ${seam.status}; ${sl?.trim() ?? 'no CHECK_SEAM_WITHIN_BAR line'}`,
       'parts/ is what the seam composites and images/ is what rigc draws; a part moved 3 px in one and not the other is the drift an assembler bug produces, and the gate passes it',
+    );
+
+    // Issue #202: the failing seam says where — every pair, its counts, its boxes and its picture, read back off the files.
+    const rows = Array.isArray(sf?.seam_pairs) ? (sf?.seam_pairs as Array<Record<string, unknown>>) : [];
+    const rowOf = (r: Record<string, unknown>): { parts: [string, string]; px_over_40: number; px_over_80: number; frame_box: [number, number, number, number]; rig_box: [number, number, number, number]; picture: string } =>
+      r as unknown as { parts: [string, string]; px_over_40: number; px_over_80: number; frame_box: [number, number, number, number]; rig_box: [number, number, number, number]; picture: string };
+    const pictureCheck = rows.map((r) => {
+      const row = rowOf(r);
+      const file = join(dir, 'seam-out', row.picture);
+      if (!existsSync(file)) return `${row.picture} MISSING`;
+      const img = readPng(file);
+      let marked = 0;
+      let outside = 0;
+      let boxed = 0;
+      for (let y = 0; y < img.height; y++) {
+        for (let x = 0; x < img.width; x++) {
+          const o = (y * img.width + x) * 4;
+          const rgb = [img.data[o], img.data[o + 1], img.data[o + 2]];
+          if (rgb.every((c, i) => c === SEAM_MARK[i])) {
+            marked++;
+            if (x < row.frame_box[0] || x > row.frame_box[2] || y < row.frame_box[1] || y > row.frame_box[3]) outside++;
+          }
+          if (rgb.every((c, i) => c === SEAM_BOX[i])) boxed++;
+        }
+      }
+      return marked === row.px_over_40 && outside === 0 && boxed > 0 ? 'ok' : `${row.picture}: ${marked} marked of ${row.px_over_40}, ${outside} outside its box, ${boxed} box px`;
+    });
+    const sum = rows.reduce((t, r) => t + rowOf(r).px_over_40, 0);
+    const worstFirst = rows.every((r, i) => i === 0 || rowOf(rows[i - 1]).px_over_40 >= rowOf(r).px_over_40);
+    const named = new Set([...CHECK_PARTS.map((p) => p.name), SEAM_NO_ART]);
+    const pairLines = seam.out.split('\n').filter((l) => l.startsWith('  seam pair '));
+    say(
+      'CK97_A_FAILING_SEAM_NAMES_EVERY_PAIR_WORST_FIRST_WITH_ITS_FRAME_BOXES_AND_A_PICTURE_OF_THE_PIXELS_IT_COUNTED',
+      sf !== null &&
+        rows.length > 0 &&
+        sum === sf.seam_px_over_40 &&
+        worstFirst &&
+        rows.every((r) => rowOf(r).parts.every((n) => named.has(n)) && rowOf(r).picture.startsWith(`${SEAM_DIR}/`)) &&
+        rows.some((r) => rowOf(r).parts.includes(CHECK_PARTS[0].name)) &&
+        pictureCheck.every((c) => c === 'ok') &&
+        sl !== null &&
+        sl.includes(seamPairText(rowOf(rows[0]) as Parameters<typeof seamPairText>[0])) &&
+        pairLines.length === rows.length &&
+        pairLines.every((l, i) => l === `  seam pair ${i + 1} of ${rows.length}: ${seamPairText(rowOf(rows[i]) as Parameters<typeof seamPairText>[0])}`),
+      `${rows.length} row(s), ${sum} px against seam_px_over_40 ${String(sf?.seam_px_over_40)}; worst first ${worstFirst}; pictures ${pictureCheck.join(', ') || 'none'}; ${pairLines.length} seam pair line(s): ${pairLines[0]?.trim() ?? 'none'}`,
+      "CK04's planted seam (the back part moved 3 px in parts/ only): a count with no part, no place and no picture left the author nothing to act on (issue #202). Every counted pixel belongs to exactly one row, so the rows sum to the bar's count; the moved part is named; each picture paints exactly its row's pixels, inside its row's box, over the frame the bar read; the FAIL line quotes the worst row and the console prints every row in check.json's order",
+    );
+
+    // A passing rig: no key, no directory, no line — and --seam-pairs adds the key and nothing else to check.json.
+    const asked = runCli(['check', '--rig', rig, '--out', join(dir, 'out-pairs'), '--seam-pairs']);
+    const askedFig = readJsonFile(join(dir, 'out-pairs', 'check.json'));
+    const plainBytes = existsSync(join(out, 'check.json')) ? readFileSync(join(out, 'check.json'), 'utf8') : '';
+    const { seam_pairs: askedRows, ...askedRest } = askedFig ?? {};
+    const twice = runCli(['check', '--rig', rig, '--out', join(dir, 'out-twice'), '--seam-pairs', '--seam-pairs']);
+    say(
+      'CK98_A_PASSING_SEAM_WRITES_WHAT_IT_ALWAYS_WROTE_AND_SEAM_PAIRS_ON_REQUEST_ADDS_ONLY_ITS_KEY',
+      ok.status === 0 &&
+        fig !== null &&
+        !('seam_pairs' in fig) &&
+        !existsSync(join(out, SEAM_DIR)) &&
+        !ok.out.includes('seam pair ') &&
+        asked.status === 0 &&
+        Array.isArray(askedRows) &&
+        (askedRows as Array<{ px_over_40: number }>).reduce((t, r) => t + r.px_over_40, 0) === fig.seam_px_over_40 &&
+        `${JSON.stringify(askedRest, null, 1)}\n` === plainBytes &&
+        existsSync(join(dir, 'out-pairs', SEAM_DIR)) &&
+        twice.status === 2 &&
+        twice.out.includes('--seam-pairs is given twice'),
+      `plain run: exit ${ok.status}, seam_pairs ${fig !== null && 'seam_pairs' in fig ? 'WRITTEN' : 'absent'}, ${SEAM_DIR}/ ${existsSync(join(out, SEAM_DIR)) ? 'WRITTEN' : 'absent'}; --seam-pairs: exit ${asked.status}, ${Array.isArray(askedRows) ? `${(askedRows as unknown[]).length} row(s)` : 'no seam_pairs'}, the rest ${`${JSON.stringify(askedRest, null, 1)}\n` === plainBytes ? 'byte-identical to the plain run' : 'DIFFERS'}; given twice: exit ${twice.status}`,
+      'the positive control of CK97 and the byte contract: a seam that passes writes the keys and files it wrote before issue #202 (CK01 holds the key list, CK02 the bytes), and the request is the only door to the rows on a pass — it adds the key and the directory and moves no other byte; a doubled switch is a usage error, not a silent second meaning',
+    );
+
+    // The cut reading by hand: a 6x2 rig, identity map. "b" (full:x) holds columns 0-3, (100, 0, 0); its piece "p" (full:x)
+    // columns 2-5, (100, 0, 0) in column 2 and (200, 0, 0) in columns 3-5; "o" (full:y) column 5, drawn last.
+    // Counted frame pixels and the 2x2 rig pixels each samples (floor(u)..+1, floor(v)..+1, inside the rig):
+    //   (0,0): cols 0-1 rows 0-1 -> b only               -> ["b", "(no art)"]
+    //   (2,0): cols 2-3 rows 0-1 -> b, p; col 3 differs -> ["b", "p"], a differing copy, |d| 90 (over 80)
+    //   (1,1): cols 1-2 row 1    -> b, p; col 2 agrees  -> ["b", "p"], no differing copy
+    //   (5,0): col 5 rows 0-1    -> p, o                 -> ["p", "o"] (two layers: no cut)
+    //   (4,1): cols 4-5 row 1    -> p, o                 -> ["p", "o"]
+    // So: ["b","p"] 2 px (1 over 80), frame box 1..2 x 0..1, rig box 1..3 x 0..1, cut full:x with 1 differing;
+    // ["p","o"] 2 px, frame 4..5 x 0..1, rig 4..5 x 0..1; ["b","(no art)"] 1 px, frame 0,0, rig 0..1 x 0..1.
+    // The tie at 2 px goes to the pair whose upper part is drawn first ("p" before "o").
+    const block = (w: number, cols: Array<[number, number, number]>): Raster => {
+      const r = newRaster(w, 2);
+      for (let y = 0; y < 2; y++) for (let x = 0; x < w; x++) r.data.set([...cols[x], 255], (y * w + x) * 4);
+      return r;
+    };
+    const redOf = (v: number): [number, number, number] => [v, 0, 0];
+    const cutParts = (pieceCol3: number) => [
+      { name: 'b', from: 'full:x', x: 0, y: 0, image: block(4, [redOf(100), redOf(100), redOf(100), redOf(100)]) },
+      { name: 'p', from: 'full:x', x: 2, y: 0, image: block(4, [redOf(100), redOf(pieceCol3), redOf(200), redOf(200)]) },
+      { name: 'o', from: 'full:y', x: 5, y: 0, image: block(1, [redOf(50)]) },
+    ];
+    const counted = [[0, 0], [2, 0], [1, 1], [5, 0], [4, 1]].map(([x, y]) => y * 6 + x).sort((a, b) => a - b);
+    const diffs = counted.map((p) => (p === 2 ? 90 : 50));
+    const fixtureSeam: SeamFigures = { mean: 0, over40: 5, over80: 1, counted, countedDiff: diffs, map: { sx: 1, sy: 1, tx: 0, ty: 0 } };
+    const vp6 = { x: 0, y: 0, width: 6, height: 2, scale: 1, pixelWidth: 6, pixelHeight: 2 };
+    const got = seamPairRows(fixtureSeam, cutParts(200), [6, 2], vp6).map((x) => x.row);
+    const agreeing = seamPairRows(fixtureSeam, cutParts(100), [6, 2], vp6).map((x) => x.row);
+    const wantRows = [
+      { parts: ['b', 'p'], px_over_40: 2, px_over_80: 1, frame_box: [1, 0, 2, 1], rig_box: [1, 0, 3, 1], cut: { from: 'full:x', differing_copies_px: 1 }, picture: `${SEAM_DIR}/01_b_p.png` },
+      { parts: ['p', 'o'], px_over_40: 2, px_over_80: 0, frame_box: [4, 0, 5, 1], rig_box: [4, 0, 5, 1], picture: `${SEAM_DIR}/02_p_o.png` },
+      { parts: ['b', SEAM_NO_ART], px_over_40: 1, px_over_80: 0, frame_box: [0, 0, 0, 0], rig_box: [0, 0, 1, 1], picture: `${SEAM_DIR}/03_b_no-art.png` },
+    ];
+    const text = got.length > 0 ? seamPairText(got[0]) : '';
+    say(
+      'CK99_A_CUT_PAIR_COUNTS_BY_HAND_THE_PIXELS_THAT_READ_ITS_BAND_IN_TWO_DIFFERENT_COLOURS',
+      JSON.stringify(got) === JSON.stringify(wantRows) &&
+        agreeing[0]?.cut?.differing_copies_px === 0 &&
+        text.includes('one layer cut in two (both from full:x): 1 of these px read a pixel both parts hold in different colours') &&
+        text.includes('a wider cuts[].overlap moves neither'),
+      `rows ${JSON.stringify(got)}; with the piece's column 3 agreeing with the base: differing ${String(agreeing[0]?.cut?.differing_copies_px)}; text ${text}`,
+      "the reading that answers issue #202's question: on the public scarf the count did not move with the band's width (26 px over 40 at overlap 1, 8 and 16), and 16 of the cut line's 24 counted pixels read a band pixel the two parts hold in different colours [observed, outside this suite]. Here the attribution, the boxes, the ranking and that count are computed by hand on six columns, and the planted negative — the same copies made to agree — reads 0, so the count is the colours and not the band's mere presence",
+    );
+
+    // AUTHORING §7's seam bar states the rows, the picture and the band reading; the text before issue #202 must not pass.
+    const authoring = readFileSync(join(ROOT, 'docs', 'AUTHORING.md'), 'utf8');
+    const seamBullet = (t: string): string => {
+      const at = t.indexOf('- **seam**: the setup-pose render against the flat composite');
+      return at === -1 ? '' : t.slice(at, t.indexOf('\n- **loop**', at));
+    };
+    const statesWhere = (b: string): boolean =>
+      ['--seam-pairs', 'seam_pairs', 'check/seam/', 'differing_copies_px', '**not**', 'excluded', 'setup-pose still'].every((w) => b.includes(w));
+    const before202 = '- **seam**: the setup-pose render against the flat composite of `parts/`: mean\n  max-channel |d| ≤ 1.0 of 255, and at most 50 pixels over 40;\n';
+    say(
+      'CK100_AUTHORING_S_SEAM_BAR_SAYS_WHERE_THE_COUNT_IS_AND_THAT_A_CUT_S_BAND_IS_COUNTED',
+      statesWhere(seamBullet(authoring)) && !statesWhere(seamBullet(before202)),
+      `§7 seam bullet ${seamBullet(authoring).length} chars, states the rows, picture and band: ${statesWhere(seamBullet(authoring))}; the pre-#202 bullet: ${statesWhere(seamBullet(before202))}`,
+      'the document is the interface for the author who meets the line: it must say which frame the bar reads, how a pixel is given to a pair, where the picture is, and that the band is counted and why — and the bullet as it stood before issue #202 is the planted negative',
     );
 
     const redRig = join(dir, 'red');
