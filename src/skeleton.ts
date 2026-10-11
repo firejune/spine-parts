@@ -2,8 +2,9 @@
  * OpenPose body-18 skeletons for the painting's structural control.
  *
  * The generation adapter (`src/comfy/painting.ts`) can condition the painting
- * on an AUTHORED pose: one of the skeletons below, drawn at the latent size and
- * applied through an OpenPose ControlNet. One skeleton is one figure with its
+ * on an AUTHORED pose: one of the skeletons below, or the points of a pose file
+ * the config names (issue #198, read by `src/config.ts`), drawn at the latent
+ * size and applied through an OpenPose ControlNet. One skeleton is one figure with its
  * head and feet placed inside the frame, which is the reason it exists — a pose
  * asked for in words alone is a pose the sampler is free to ignore.
  *
@@ -37,6 +38,14 @@ import { newRaster, type Raster } from './raster/types.ts';
 
 export type SkeletonName = 'stand_sides' | 'stand_clasp';
 
+/** The built-in skeletons' names, in the order the config's refusal lists them. */
+export const SKELETON_NAMES: readonly SkeletonName[] = ['stand_sides', 'stand_clasp'];
+
+/** Whether `v` names a built-in skeleton; any other string in `generation.control.skeleton` is a pose file's path. */
+export function isSkeletonName(v: unknown): v is SkeletonName {
+  return typeof v === 'string' && (SKELETON_NAMES as readonly string[]).includes(v);
+}
+
 /** Body-18 order. "r"/"l" are the SUBJECT's sides, so r_shoulder is on the image left for a front-facing figure. */
 export const KEYPOINT_NAMES = [
   'nose', 'neck',
@@ -64,7 +73,8 @@ export const COLORS: ReadonlyArray<readonly [number, number, number]> = [
 /** The canvas the points are authored on. */
 export const SKELETON_BASE: readonly [number, number] = [832, 1216];
 
-type Points = Record<KeypointName, readonly [number, number]>;
+/** The 18 body-18 keypoints of one figure, by name, in canvas pixels (x right, y down). */
+export type PosePoints = Record<KeypointName, readonly [number, number]>;
 
 const HEAD = {
   nose: [416, 176], r_eye: [398, 160], l_eye: [434, 160], r_ear: [378, 170], l_ear: [454, 170], neck: [416, 252],
@@ -82,7 +92,7 @@ export interface SkeletonPose {
    */
   words: string;
   note: string;
-  points: Points;
+  points: PosePoints;
 }
 
 export const SKELETONS: Record<SkeletonName, SkeletonPose> = {
@@ -104,7 +114,7 @@ export function stickScale(maxSide: number): number {
 }
 
 /** A skeleton's points at a `w`x`h` canvas: each authored point times `w / 832`, `h / 1216`. */
-export function scaledPoints(name: SkeletonName, w: number, h: number): Points {
+export function scaledPoints(name: SkeletonName, w: number, h: number): PosePoints {
   const sx = w / SKELETON_BASE[0];
   const sy = h / SKELETON_BASE[1];
   const src = SKELETONS[name].points;
@@ -354,7 +364,11 @@ export function ellipsePoly(cx: number, cy: number, ax: number, ay: number, angl
 
 /**
  * Draw one skeleton at `w`x`h`: black RGB (alpha 255), limbs at 0.6 x colour,
- * keypoints on top.
+ * keypoints on top. `pose` is a built-in's name, whose authored points are
+ * scaled to the canvas ({@link scaledPoints}), or the points of a pose file
+ * (issue #198), already in this canvas's pixels and drawn as given — the same
+ * drawing either way, so a file holding a built-in's points at this size draws
+ * the built-in's image byte for byte.
  *
  * Measured bit-exact against Pillow 12.2.0 running the reference's own
  * renderer: both skeletons at 832x1216, 1024x1024, 600x900, 1216x832,
@@ -367,10 +381,10 @@ export function ellipsePoly(cx: number, cy: number, ax: number, ay: number, angl
  * xinsir rule above. Passing the canonical 4 px draws the skeleton the
  * selftest plants to show its width control goes red.
  */
-export function renderSkeleton(name: SkeletonName, w: number, h: number, stickHalfWidth: number = 4 * stickScale(Math.max(w, h))): Raster {
+export function renderSkeleton(pose: SkeletonName | PosePoints, w: number, h: number, stickHalfWidth: number = 4 * stickScale(Math.max(w, h))): Raster {
   const r = newRaster(w, h);
   for (let i = 3; i < r.data.length; i += 4) r.data[i] = 255;
-  const pts = scaledPoints(name, w, h);
+  const pts = typeof pose === 'string' ? scaledPoints(pose, w, h) : pose;
   const kp = KEYPOINT_NAMES.map((k) => pts[k]);
   const sw = stickHalfWidth;
   LIMB_SEQ.forEach(([i1, i2], i) => {

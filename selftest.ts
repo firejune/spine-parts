@@ -186,7 +186,7 @@ import { COMPOSED_HAND_X, COMPOSED_SHOULDER, writeComposedRig, DRIVER_AT, DRIVER
 import { buildHeaderProblem } from './tools/atlas_population.ts';
 import { ALIAS, AliasTarballError, compareTarballs, MANIFEST as ALIAS_MANIFEST, packAlias, packInto, renamed } from './scripts/alias_tarball.ts';
 import { BLINK, blinkHoldMisses, CONTROL_SUFFIX, framesInside, IDLE_FPS, type MotionKey, type MotionSpec, sineTrack } from './src/motion.ts';
-import { type BoneEntry, type CharacterConfig, CONFIG_REQUIRES, type ContourRegionSpec, type Cut, type Patch, type Point, type ConfigDoor, CONSTRAINT_BONE_FIELDS, type Generation, isDoorKey, loadConfig, loadConfigAndAnimations, loadEarlyConfig, parseConfig, parseEarlyConfig, type SkeletonSections } from './src/config.ts';
+import { type BoneEntry, type CharacterConfig, CONFIG_REQUIRES, type ContourRegionSpec, type Cut, type Patch, type Point, type ConfigDoor, CONSTRAINT_BONE_FIELDS, type Generation, isDoorKey, loadConfig, loadConfigAndAnimations, loadEarlyConfig, loadPaintConfig, parseConfig, parseEarlyConfig, type SkeletonSections } from './src/config.ts';
 import { RIG_KEYS, RIG_SKIN_CONSTRAINT_KEYS } from 'rig-c/src/rig.ts';
 import { type BoneTransform, computeExactFrameTransforms, cropToSpineY, toWorld } from './src/coords.ts';
 import { artMask, contourFit, type ContourMesh, contourMesh, contourOutline, type ContourParams, type ContourRegion, contourTopologyProblems, delaunayViolations, GRID, growSilhouette, inCircle, keepPoints, MAX_SIDE, marginDisc, outlineInRegions, withinMarginSquared } from './src/contour.ts';
@@ -343,7 +343,7 @@ import { apply as applyAffine, type ComparedMesh, contourAtBudget, cost, errors,
 import { FIELD_LATTICE_GRID, FIELD_POSES, fieldRegion, REGION_SPACINGS } from './fixtures/localfield.ts';
 import { BASE_SPACINGS, CONTROL, describeWorst, displacement, frameOpenings, kindOf, neighbours, pickAtBudget, type PlacedMask, POSE_PHASE, ranked, regionPoses, regionSpacings, resolveSegments, seamOpening, seamPairs, sineAt, SWEEP_TOLERANCES, testRegion, toWorldPx, variantConfig } from './tools/real_compare.ts';
 import { pyRound } from './src/round.ts';
-import { COLORS, KEYPOINT_NAMES, renderSkeleton, scaledPoints, SKELETON_BASE, SKELETONS, stickScale } from './src/skeleton.ts';
+import { COLORS, isSkeletonName, KEYPOINT_NAMES, renderSkeleton, scaledPoints, SKELETON_BASE, SKELETONS, stickScale } from './src/skeleton.ts';
 import { readTag, type TagReading } from './src/tags.ts';
 
 const ROOT = import.meta.dir;
@@ -1597,6 +1597,56 @@ function runConfigSuite(): number {
       one75(list76, 'CONFIG_FIELD_TYPE', RAT, 'is []; an object of chain name -> { stations } is required'),
     `planted on a lattice -> ${show75(grid76)}; on the bone chest -> ${show75(bone76)}; {} -> ${show75(empty76)}; [] -> ${show75(list76)}; the contour positive -> ${show75(good75)}`,
     "issue #188: a lattice's vertices are its grid's corners, so a row cannot be placed on it — refused, never ignored; a rib runs across a chain the mesh is weighted along, so a name that is not one of its chains has nothing to place a rib on, and an empty object places nothing",
+  );
+
+  // CF80 — issue #198: generation.control.skeleton is a built-in's name or a non-empty path; anything else is the field's
+  // type refusal, naming both built-ins and the path. With no path to resolve against, a path string loads unread.
+  /** A paint-door config whose control names `skeleton`; `pose: undefined` in `extra` drops generation.pose. */
+  const ctl = (skeleton: unknown, extra: Record<string, unknown> = {}): Record<string, unknown> => ({ key: 'k', generation: JSON.parse(JSON.stringify({ ...fixtureGeneration(), control: { skeleton, strength: 0.8, end_percent: 0.7 }, ...extra })) });
+  const SKF = 'config.generation.control.skeleton';
+  const need80 = '"stand_sides" or "stand_clasp", or the path of a pose file relative to the config\'s directory, is required';
+  const num80 = refusals(() => parseEarlyConfig(ctl(3), 'paint'));
+  const empty80 = refusals(() => parseEarlyConfig(ctl(''), 'paint'));
+  const null80 = refusals(() => parseEarlyConfig(ctl(null), 'paint'));
+  const builtin80 = refusals(() => parseEarlyConfig(ctl('stand_clasp'), 'paint'));
+  const path80 = refusals(() => parseEarlyConfig(ctl('poses/none.json'), 'paint'));
+  say(
+    'CF80_A_CONTROL_SKELETON_IS_A_BUILT_IN_NAME_OR_A_PATH_AND_ANYTHING_ELSE_IS_REFUSED_AT_THE_FIELD',
+    one75(num80, 'CONFIG_FIELD_TYPE', SKF, `is 3; ${need80}`) &&
+      one75(empty80, 'CONFIG_FIELD_TYPE', SKF, `is ""; ${need80}`) &&
+      one75(null80, 'CONFIG_FIELD_TYPE', SKF, `is null; ${need80}`) &&
+      builtin80 === null &&
+      path80 === null,
+    `3 -> ${show75(num80)}; "" -> ${show75(empty80)}; null -> ${show75(null80)}; "stand_clasp" -> ${show75(builtin80)}; "poses/none.json" with no path to resolve -> ${show75(path80)}`,
+    'issue #198: the field reads a string two ways, a built-in name or a path; a value that is neither string has no reading, and a parse with no config path cannot read the file, as motion.animations_from is not read there',
+  );
+
+  // CF81 — issue #198: a pose file carries points and no words, so generation.pose is required beside one (a built-in
+  // brings its own); and the full loader, reading a config from a path, reads the pose file too.
+  const words81 = refusals(() => parseEarlyConfig(ctl('poses/sit.json', { pose: undefined }), 'paint'));
+  const wordsIn81 = refusals(() => parseEarlyConfig(ctl('poses/sit.json'), 'paint'));
+  const clasp81 = refusals(() => parseEarlyConfig(ctl('stand_clasp', { pose: undefined }), 'paint'));
+  const d81 = temp('pose-full');
+  let full81: PartsError | null = null;
+  let parsed81: PartsError | null = null;
+  try {
+    const c = { ...minimalConfig(), generation: (ctl('poses/none.json') as { generation: unknown }).generation };
+    writeFileSync(join(d81, 'config.json'), JSON.stringify(c));
+    full81 = refusals(() => loadConfig(join(d81, 'config.json')));
+    parsed81 = refusals(() => parseConfig(c));
+  } finally {
+    rmSync(d81, { recursive: true, force: true });
+  }
+  say(
+    'CF81_A_POSE_FILE_NEEDS_GENERATION_POSE_AND_THE_FULL_LOADER_READS_IT_BESIDE_THE_CONFIG',
+    one75(words81, 'CONFIG_FIELD_PRESENT', 'config.generation.pose') &&
+      (words81?.problems[0].detail.includes('which carries no words') ?? false) &&
+      wordsIn81 === null &&
+      clasp81 === null &&
+      one75(full81, 'CONFIG_FILE_PRESENT', SKF) &&
+      parsed81 === null,
+    `pose file, no generation.pose -> ${show75(words81)}; with it -> ${show75(wordsIn81)}; stand_clasp, no generation.pose -> ${show75(clasp81)}; the full loader from a path, file absent -> ${full81 === null ? 'loads' : codes(full81)}; parseConfig, no path -> ${show75(parsed81)}`,
+    'issue #198: the pose words come from the config or a built-in, and none is guessed for a file; a config is not half-known at any door, so a broken pose file is refused wherever the config is read from a path',
   );
   return bad();
 }
@@ -11890,6 +11940,120 @@ function runSkeletonSuite(): number {
     `two renders of stand_clasp at ${W}x${H}: ${a.length} bytes each, identical`,
     'the skeleton is uploaded as the ControlNet image, and determinism is a contract',
   );
+
+  // SK05–SK08 — issue #198: generation.control.skeleton names a pose file beside the config, read by comfy paint's loader.
+  const dir = temp('pose-file');
+  try {
+    mkdirSync(join(dir, 'poses'));
+    /** A paint-door config whose control names `skeleton`, at latent `w`x`h`; written beside the poses, its path returned. */
+    const paintCfg = (skeleton: unknown, w: number, h: number, extra: Record<string, unknown> = {}): string => {
+      const at = join(dir, `config-${String(skeleton).replace(/[^a-z0-9]/gi, '')}-${w}x${h}.json`);
+      writeFileSync(at, JSON.stringify({ key: 'k', generation: { ...fixtureGeneration(), latent: [w, h], control: { skeleton, strength: 0.8, end_percent: 0.7 }, ...extra } }));
+      return at;
+    };
+    const poseFile = (name: string, body: unknown): string => {
+      writeFileSync(join(dir, 'poses', name), typeof body === 'string' ? body : JSON.stringify(body));
+      return `poses/${name}`;
+    };
+    /** A built-in's points as the pose file would hold them at `w`x`h`: `scaledPoints`, which JSON round-trips exactly (a double prints and parses to itself). */
+    const builtinPose = (name: 'stand_sides' | 'stand_clasp', w: number, h: number): Record<string, number[]> =>
+      Object.fromEntries(KEYPOINT_NAMES.map((k) => [k, [...scaledPoints(name, w, h)[k]]]));
+    const sameBytes = (x: Uint8Array, y: Uint8Array): boolean => x.length === y.length && x.every((v, i) => v === y[i]);
+    const shown = (e: PartsError | null): string => (e === null ? 'loads' : e.problems.map((q) => `${q.code} ${q.object.replace(dir, '<dir>')}`).join('; '));
+
+    // SK05 — at the base canvas the scale is 1 and the points are the authored integers; at 600x900 they are the
+    // scaled doubles (stand_clasp's r_elbow x = 318 * 600 / 832 = 229.326…), so both the integer and the fractional
+    // path are held. The planted pose moves r_wrist one pixel right and must change the bytes.
+    const cases = [['stand_sides', W, H], ['stand_clasp', W, H], ['stand_clasp', 600, 900]] as const;
+    const same = cases.map(([name, w, h]) => {
+      const { pose } = loadPaintConfig(paintCfg(poseFile(`${name}-${w}.json`, { width: w, height: h, points: builtinPose(name, w, h) }), w, h));
+      const want = encodePngBytes(renderSkeleton(name, w, h));
+      const got = pose === null ? new Uint8Array(0) : encodePngBytes(renderSkeleton(pose.points, w, h));
+      return { label: `${name} at ${w}x${h}`, ok: pose !== null && sameBytes(got, want), bytes: want.length };
+    });
+    const moved = builtinPose('stand_sides', W, H);
+    moved.r_wrist = [moved.r_wrist[0] + 1, moved.r_wrist[1]];
+    const mp = loadPaintConfig(paintCfg(poseFile('moved.json', { width: W, height: H, points: moved }), W, H)).pose;
+    const movedDiffers = mp !== null && !sameBytes(encodePngBytes(renderSkeleton(mp.points, W, H)), encodePngBytes(renderSkeleton('stand_sides', W, H)));
+    say(
+      'SK05_A_POSE_FILE_EQUAL_TO_A_BUILT_IN_RENDERS_THE_BUILT_IN_S_CONTROL_IMAGE_BYTE_FOR_BYTE',
+      same.every((c) => c.ok) && movedDiffers,
+      `${same.map((c) => `${c.label}: ${c.ok ? `${c.bytes} bytes, identical` : 'DIFFERS'}`).join('; ')}; planted r_wrist +1 px -> ${movedDiffers ? 'different bytes' : 'the same bytes'}`,
+      'issue #198: a pose file is drawn by the same renderer as a built-in, at the latent size, from its points as given; the two built-ins are untouched',
+    );
+
+    // SK06 — the file itself: absent, a misspelt built-in (a path to no file), not JSON, not an object. Each is one problem.
+    const F = 'config.generation.control.skeleton';
+    const missing = refusals(() => loadPaintConfig(paintCfg('poses/none.json', W, H)));
+    const misspelt = refusals(() => loadPaintConfig(paintCfg('stand_side', W, H)));
+    const broken = refusals(() => loadPaintConfig(paintCfg(poseFile('broken.json', '{"width": '), W, H)));
+    const list = refusals(() => loadPaintConfig(paintCfg(poseFile('list.json', []), W, H)));
+    const one = (e: PartsError | null, code: string, object: string, part?: string): boolean =>
+      e !== null && e.problems.length === 1 && e.problems[0].code === code && e.problems[0].object === object && (part === undefined || e.problems[0].detail.includes(part));
+    say(
+      'SK06_A_POSE_FILE_THAT_IS_ABSENT_NOT_JSON_OR_NOT_AN_OBJECT_IS_REFUSED_BY_NAME',
+      one(missing, 'CONFIG_FILE_PRESENT', F, 'which is neither a built-in skeleton nor a file; "stand_sides" or "stand_clasp", or a pose file') &&
+        one(misspelt, 'CONFIG_FILE_PRESENT', F, `names ${join(dir, 'stand_side')}, which is neither a built-in skeleton nor a file`) &&
+        one(broken, 'CONFIG_IS_JSON', `${F} (${join(dir, 'poses', 'broken.json')})`) &&
+        one(list, 'CONFIG_FIELD_TYPE', `${F} (${join(dir, 'poses', 'list.json')})`, 'is []; an object is required'),
+      `no such file -> ${shown(missing)}; "stand_side" -> ${shown(misspelt)}; '{"width": ' -> ${shown(broken)}; [] -> ${shown(list)}`,
+      'issue #198: a string that is not a built-in name is a path, so a misspelt built-in is a missing file — and the refusal names both built-ins, since that is the likelier slip',
+    );
+
+    // SK07 — five faults counted by hand, one refusal: generation.seed -1 (the config's own), "nose" written twice, a
+    // 832x1216 canvas against a 600x900 latent, points holding 17 names (r_ear and l_ear dropped, "hand" added: 16 + 1),
+    // and r_wrist at x 900, past the file's 832 px width.
+    const bad = builtinPose('stand_sides', W, H);
+    delete bad.r_ear;
+    delete bad.l_ear;
+    bad.hand = [10, 10];
+    bad.r_wrist = [900, 640];
+    const badText = JSON.stringify({ width: W, height: H, points: bad }).replace('"points":{', '"points":{"nose":[1,1],');
+    const pf = join(dir, 'poses', 'bad.json');
+    const all = refusals(() => loadPaintConfig(paintCfg(poseFile('bad.json', badText), 600, 900, { seed: -1 })));
+    const want = [
+      ['CONFIG_FIELD_TYPE', 'config.generation.seed'],
+      ['CONFIG_KEY_UNIQUE', `${F} (${pf}).points`],
+      ['CONFIG_POSE_CANVAS', `${F} (${pf})`],
+      ['CONFIG_POSE_KEYPOINTS', `${F} (${pf}).points`],
+      ['CONFIG_POSE_IN_CANVAS', `${F} (${pf}).points.r_wrist`],
+    ];
+    const got = all === null ? [] : all.problems.map((q) => [q.code, q.object]);
+    const detail = (code: string): string => all?.problems.find((q) => q.code === code)?.detail ?? '';
+    say(
+      'SK07_A_POSE_FILE_S_COUNT_CANVAS_AND_POINTS_ARE_REFUSED_BY_NAME_ALL_AT_ONCE_WITH_THE_CONFIG_S_OWN',
+      got.length === want.length &&
+        want.every(([code, object]) => got.some(([c2, o2]) => c2 === code && o2 === object)) &&
+        detail('CONFIG_POSE_KEYPOINTS').startsWith('holds 17 keypoint(s); the 18 body-18 keypoints are required') &&
+        detail('CONFIG_POSE_KEYPOINTS').includes('missing: r_ear, l_ear — not body-18: hand') &&
+        detail('CONFIG_POSE_IN_CANVAS') === 'is [900, 640]; a point inside the 832x1216 canvas is required, 0 <= x <= 832 and 0 <= y <= 1216' &&
+        detail('CONFIG_POSE_CANVAS').startsWith("states a 832x1216 canvas; generation.latent's 600x900 is required"),
+      `${shown(all)} (by hand ${want.length}); count: "${detail('CONFIG_POSE_KEYPOINTS').slice(0, 60)}…"`,
+      'issue #198: every fault of the file is named beside the config\'s own in one refusal, and the point is named with the canvas it left',
+    );
+
+    // SK08 — the canvas's edges are inside (continuous coordinates, as src/keypoints.ts reads a joint): nose at [0, 0] and
+    // r_ankle at [832, 1216] load; half a pixel past either edge does not.
+    const edge = builtinPose('stand_sides', W, H);
+    edge.nose = [0, 0];
+    edge.r_ankle = [W, H];
+    const onEdge = refusals(() => loadPaintConfig(paintCfg(poseFile('edge.json', { width: W, height: H, points: edge }), W, H)));
+    const past = { ...edge, nose: [-0.5, 0], r_ankle: [W, H + 0.5] };
+    const pastErr = refusals(() => loadPaintConfig(paintCfg(poseFile('past.json', { width: W, height: H, points: past }), W, H)));
+    const pp = join(dir, 'poses', 'past.json');
+    say(
+      'SK08_THE_CANVAS_EDGES_ARE_INSIDE_AND_HALF_A_PIXEL_PAST_THEM_IS_REFUSED',
+      onEdge === null &&
+        pastErr !== null &&
+        pastErr.problems.length === 2 &&
+        pastErr.problems.every((q) => q.code === 'CONFIG_POSE_IN_CANVAS') &&
+        pastErr.problems.map((q) => q.object).join() === `${F} (${pp}).points.nose,${F} (${pp}).points.r_ankle`,
+      `[0, 0] and [${W}, ${H}] -> ${shown(onEdge)}; [-0.5, 0] and [${W}, ${H + 0.5}] -> ${shown(pastErr)}`,
+      'issue #198: a keypoint at the edge is drawn half on the canvas, which is where an author may put a hand that leaves the frame; the bound is the one src/keypoints.ts holds a joint to, so the package reads one canvas one way',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
   return bad();
 }
 
@@ -12220,7 +12384,7 @@ function referencePoseWords(skeleton: 'stand_sides' | 'stand_clasp'): string {
 /** Every positive term that none of its named sources holds. Empty means each word is traceable to the config, the head or the skeleton. */
 function untraceable(positive: string, g: Generation): string[] {
   const terms = (s: string): string[] => s.split(',').map((t) => t.trim()).filter((t) => t !== '');
-  const pose = g.pose !== undefined ? g.pose : g.control !== undefined ? `${FRAMING}, ${SKELETONS[g.control.skeleton].words}` : '';
+  const pose = g.pose !== undefined ? g.pose : g.control !== undefined && isSkeletonName(g.control.skeleton) ? `${FRAMING}, ${SKELETONS[g.control.skeleton].words}` : '';
   const known = new Set([POSITIVE_HEAD, g.trigger, g.identity, g.costume, pose, g.style].flatMap(terms));
   return terms(positive).filter((t) => !known.has(t));
 }
