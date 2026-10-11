@@ -45,6 +45,21 @@
  *   through `src/coords.ts`. The root is shared, so a character whose idle
  *   keys it, or whose constraint names it, is refused (`SCENE_ROOT_SHARED`):
  *   it would move every character.
+ * - **The scale, with the offset (issue #197).** `characters[].scale`, a
+ *   positive number and 1 when absent, sizes the character about its stage's
+ *   top-left corner: a point p of its root frame lands at `scale * p + shift`
+ *   ({@link rootShift}). Every length it carries is scaled exactly where
+ *   Spine's own loader multiplies by its `scale` (`SkeletonJson.js`): bone
+ *   `x`, `y`, `length`; region `x`, `y` (and its drawn size, through
+ *   `scaleX`/`scaleY`); each weight's bind `x`, `y`; the constraints' lengths
+ *   ({@link scaledConstraint}); the translate keys and their curves'
+ *   values. Spine also scales the skeleton's `referenceScale`, which the
+ *   composed skeleton holds once for every character, so a physics
+ *   constraint with a nonzero `wind` or `gravity` cannot be scaled per
+ *   character and is refused (`SCENE_SCALE_EXACT`), as is a track property
+ *   this module does not know to be a length or not. A mesh's `width` and
+ *   `height` (its image's, nonessential) stay. At scale 1 nothing is
+ *   computed: the bytes are the ones written before the field existed.
  * - **The order.** `order` lists character ids (all of that character's
  *   slots not named elsewhere, in its own order) and prefixed slots; each
  *   slot is drawn exactly once. The plate, if any, is drawn first.
@@ -123,6 +138,8 @@ export interface SceneCharacter {
   build: string;
   buildDir: string;
   offset: [number, number];
+  /** {@link SceneCharacter.scale}: the character's size on the canvas, 1 (as built) when the file leaves it out (issue #197). */
+  scale: number;
 }
 
 export interface ScenePlate {
@@ -246,7 +263,7 @@ export function loadScene(path: string): SceneFile {
         fail('SCENE_FIELD_TYPE', where, `is ${show(c)}; {"id", "build", "offset"} is required`);
         return;
       }
-      known(c, where, ['id', 'build', 'offset']);
+      known(c, where, ['id', 'build', 'offset', 'scale']);
       let ok = true;
       for (const k of ['id', 'build', 'offset']) {
         if (!(k in c)) {
@@ -279,7 +296,12 @@ export function loadScene(path: string): SceneFile {
         fail('SCENE_FIELD_TYPE', `${where}.offset`, `is ${show(off)}; [x, y], two finite numbers of canvas px, is required`);
         ok = false;
       }
-      if (ok) characters.push({ id: id as string, build: c.build as string, buildDir: resolve(base, c.build as string), offset: [(off as number[])[0], (off as number[])[1]] });
+      const sc = c.scale;
+      if ('scale' in c && !(typeof sc === 'number' && Number.isFinite(sc) && sc > 0)) {
+        fail('SCENE_FIELD_TYPE', `${where}.scale`, `is ${show(sc)}; a positive finite number is required — the character's size on the canvas about its stage's top-left corner, 1 drawing it as built (the default when the key is absent)`);
+        ok = false;
+      }
+      if (ok) characters.push({ id: id as string, build: c.build as string, buildDir: resolve(base, c.build as string), offset: [(off as number[])[0], (off as number[])[1]], scale: 'scale' in c ? (sc as number) : 1 });
     });
   }
 
@@ -473,10 +495,187 @@ export function readCharacterBuild(c: SceneCharacter, problems: Problem[]): Char
  * whose Spine point is (`canvas.x + offset[0]`, `cropToSpineY(offset[1], H)`).
  * Zero for a character at (0, 0) on a canvas of its own stage's size.
  */
-export function rootShift(stage: RigSpec['skeleton'], scene: RigSpec['skeleton'], offset: readonly [number, number]): [number, number] {
-  const dx = scene.x + offset[0] - stage.x;
-  const dy = scene.y + cropToSpineY(offset[1], scene.height) - (stage.y + cropToSpineY(0, stage.height));
+export function rootShift(stage: RigSpec['skeleton'], scene: RigSpec['skeleton'], offset: readonly [number, number], scale = 1): [number, number] {
+  // At scale 1 the expressions are the ones this function always computed (1 * v is v in float64, but the code says so).
+  if (scale === 1) {
+    const dx = scene.x + offset[0] - stage.x;
+    const dy = scene.y + cropToSpineY(offset[1], scene.height) - (stage.y + cropToSpineY(0, stage.height));
+    return [dx, dy];
+  }
+  // A point p of the character's root frame lands at scale * p + shift, so its stage corner c lands at scale * c +
+  // shift, which must be the canvas point of offset: shift = corner on the canvas - scale * c.
+  const dx = scene.x + offset[0] - scale * stage.x;
+  const dy = scene.y + cropToSpineY(offset[1], scene.height) - scale * (stage.y + cropToSpineY(0, stage.height));
   return [dx, dy];
+}
+
+// ---------------------------------------------------------------------------
+// a character's scale (issue #197)
+// ---------------------------------------------------------------------------
+
+/**
+ * Spine's own defaults for the two scaled fields whose default is not 0 —
+ * `SkeletonJson.js` (spine-core 4.3), `getValue(constraintMap, "limit", 5000)`
+ * on a physics constraint, `getValue(toEntry, "max", 1)` on a transform
+ * constraint's `to` entry, and `getValue(constraintMap, "scale", 1)` on a
+ * slider. An absent field loads as the default times the loader's scale (or
+ * over it), so a scaled character writes that product: leaving the key out
+ * would load the unscaled default.
+ */
+export const SPINE_PHYSICS_LIMIT_DEFAULT = 5000;
+export const SPINE_TRANSFORM_TO_MAX_DEFAULT = 1;
+export const SPINE_SLIDER_SCALE_DEFAULT = 1;
+
+/** A bone track's properties whose values are lengths (`readTimeline1/2(..., scale)` in `SkeletonJson.js`), and the ones that are not. */
+export const SCALED_TRACK_PROPERTIES: readonly string[] = ['translate', 'translatex', 'translatey'];
+export const UNSCALED_TRACK_PROPERTIES: readonly string[] = ['rotate', 'scale', 'scalex', 'scaley', 'shear', 'shearx', 'sheary', 'inherit'];
+
+/** The two properties a transform constraint or a slider reads or drives in length (`propertyScale` in `SkeletonJson.js`). */
+function lengthProperty(name: string): boolean {
+  return name === 'x' || name === 'y';
+}
+
+/** A value scaled by `s`, at the places the rig stage writes an offset to; `s` 1 leaves the number as written. */
+function scaledBy(v: number, s: number): number {
+  if (s === 1) return v;
+  const r = pyRound(v * s, OFFSET_PLACES);
+  return r === 0 ? 0 : r;
+}
+
+/** A nonzero `wind` or `gravity` on a physics constraint: Spine multiplies it by the skeleton-wide `referenceScale` (translation) and by bone length over it (rotation), so no per-constraint value reproduces a scaled character. */
+function physicsForce(con: Record<string, unknown>): string[] {
+  return ['wind', 'gravity'].filter((k) => typeof con[k] === 'number' && con[k] !== 0);
+}
+
+/**
+ * Why a character at `scale` other than 1 cannot be written exactly, each a
+ * `SCENE_SCALE_EXACT` problem: a track whose property this module does not
+ * know to be a length or not, a key whose `v` is neither a list of numbers
+ * nor a map of them, and a physics constraint carrying a wind or a gravity
+ * (see {@link physicsForce}). Nothing when `scale` is 1.
+ */
+export function scaleProblems(c: SceneCharacter, b: CharacterBuild): Problem[] {
+  if (c.scale === 1) return [];
+  const out: Problem[] = [];
+  const who = `character "${c.id}" at scale ${c.scale}`;
+  for (const [an, anim] of Object.entries(animationsOf(b.motion))) {
+    anim.tracks.forEach((t, k) => {
+      const where = `${who} motion.json animations.${an}.tracks[${k}]`;
+      const prop = String(t.property);
+      if (!SCALED_TRACK_PROPERTIES.includes(prop) && !UNSCALED_TRACK_PROPERTIES.includes(prop)) {
+        out.push({ code: 'SCENE_SCALE_EXACT', object: `${where}.property`, detail: `is ${show(t.property)}, which compose does not know to be a length or not; it scales ${SCALED_TRACK_PROPERTIES.join(', ')} and leaves ${UNSCALED_TRACK_PROPERTIES.join(', ')} — compose this character at scale 1, or rebuild it at another assemble.rig_scale` });
+        return;
+      }
+      if (!SCALED_TRACK_PROPERTIES.includes(prop)) return;
+      (t.keys as unknown as Array<Record<string, unknown>>).forEach((key, j) => {
+        const v = key.v;
+        const numbers = (x: unknown): boolean => Array.isArray(x) && x.every((n) => typeof n === 'number');
+        if (!numbers(v) && !(isRecord(v) && Object.values(v).every(numbers))) {
+          out.push({ code: 'SCENE_SCALE_EXACT', object: `${where}.keys[${j}].v`, detail: `is ${show(v)}; a ${prop} key's value is a length, which compose scales in a list of numbers or a map of member to list, and this is neither` });
+        }
+      });
+    });
+  }
+  (b.rig.constraints ?? []).forEach((con, k) => {
+    const forces = con.type === 'physics' ? physicsForce(con as Record<string, unknown>) : [];
+    if (forces.length > 0) {
+      out.push({
+        code: 'SCENE_SCALE_EXACT',
+        object: `${who} rig.json constraints[${k}] (physics "${String(con.name)}")`,
+        detail: `declares ${forces.map((f) => `${f} ${String((con as Record<string, unknown>)[f])}`).join(' and ')}; Spine applies it times the skeleton's referenceScale to the bone's position and times its length over referenceScale to its rotation, and the composed skeleton has one referenceScale for every character, so no value written here draws the character at ${c.scale} — compose it at scale 1, or rebuild it at another assemble.rig_scale`,
+      });
+    }
+  });
+  return out;
+}
+
+/**
+ * A constraint of a character at scale `s`, its every length scaled as
+ * Spine's own loader scales a skeleton (`SkeletonJson.readSkeletonData`, the
+ * `* scale` sites): an ik's `softness`; a transform's `x`, `y`, and in its
+ * `properties` a length `from`'s `offset`, a length `to`'s `offset` and
+ * `max`, and each `to`'s `scale` by the to-unit over the from-unit; a path's
+ * `position` under `positionMode` Fixed and its `spacing` under `spacingMode`
+ * Length (the default) or Fixed; a physics `limit`; a slider driven by a
+ * bone's `x` or `y`: its `from` scaled and its `scale` divided. An absent
+ * field whose Spine default is not 0 is written as that default scaled. Every
+ * other field — mixes, degrees, ratios, physics rates — is not a length and
+ * is copied. `s` 1 returns `con` as given.
+ */
+export function scaledConstraint(con: Record<string, unknown>, s: number): Record<string, unknown> {
+  if (s === 1) return con;
+  const out: Record<string, unknown> = { ...con };
+  const len = (k: string): void => {
+    if (typeof out[k] === 'number') out[k] = scaledBy(out[k] as number, s);
+  };
+  const lower = (v: unknown, fallback: string): string => (typeof v === 'string' ? v : fallback).toLowerCase();
+  switch (con.type) {
+    case 'ik':
+      len('softness');
+      break;
+    case 'transform': {
+      len('x');
+      len('y');
+      if (isRecord(con.properties)) {
+        const props: Record<string, unknown> = {};
+        for (const [from, entry] of Object.entries(con.properties)) {
+          if (!isRecord(entry)) {
+            props[from] = entry;
+            continue;
+          }
+          const fs = lengthProperty(from) ? s : 1;
+          const e: Record<string, unknown> = { ...entry };
+          if (typeof e.offset === 'number') e.offset = scaledBy(e.offset, fs);
+          if (isRecord(entry.to)) {
+            const tos: Record<string, unknown> = {};
+            for (const [to, te] of Object.entries(entry.to)) {
+              if (!isRecord(te)) {
+                tos[to] = te;
+                continue;
+              }
+              const ts = lengthProperty(to) ? s : 1;
+              const t: Record<string, unknown> = { ...te };
+              if (typeof t.offset === 'number') t.offset = scaledBy(t.offset, ts);
+              if (ts !== 1) t.max = scaledBy(typeof t.max === 'number' ? t.max : SPINE_TRANSFORM_TO_MAX_DEFAULT, ts);
+              if (ts !== fs) t.scale = scaledBy(typeof t.scale === 'number' ? t.scale : 1, ts / fs);
+              tos[to] = t;
+            }
+            e.to = tos;
+          }
+          props[from] = e;
+        }
+        out.properties = props;
+      }
+      break;
+    }
+    case 'path':
+      if (lower(con.positionMode, 'percent') === 'fixed') len('position');
+      if (['length', 'fixed'].includes(lower(con.spacingMode, 'length'))) len('spacing');
+      break;
+    case 'physics':
+      out.limit = scaledBy(typeof con.limit === 'number' ? con.limit : SPINE_PHYSICS_LIMIT_DEFAULT, s);
+      break;
+    case 'slider':
+      if (typeof con.bone === 'string' && typeof con.property === 'string' && lengthProperty(con.property)) {
+        len('from');
+        out.scale = scaledBy(typeof con.scale === 'number' ? con.scale : SPINE_SLIDER_SCALE_DEFAULT, 1 / s);
+      }
+      break;
+  }
+  return out;
+}
+
+/** A bone track's keys at scale `s`: a length property's values, and its curve's value control points, scaled; any other track as given. */
+function scaledTrack<T extends { property: string; keys: unknown[] }>(t: T, s: number): T {
+  if (s === 1 || !SCALED_TRACK_PROPERTIES.includes(t.property)) return t;
+  const list = (v: unknown): unknown => (Array.isArray(v) ? v.map((n) => scaledBy(n as number, s)) : v);
+  const keys = (t.keys as Array<Record<string, unknown>>).map((k) => {
+    const out: Record<string, unknown> = { ...k, v: isRecord(k.v) ? Object.fromEntries(Object.entries(k.v).map(([m, x]) => [m, list(x)])) : list(k.v) };
+    // A raw curve is four numbers per channel, (time, value, time, value): the values are at the odd places.
+    if (Array.isArray(k.curve)) out.curve = (k.curve as number[]).map((n, i) => (i % 2 === 1 ? scaledBy(n, s) : n));
+    return out;
+  });
+  return { ...t, keys };
 }
 
 /** The composed rig's stage: the canvas, x measured from its centre and y up from its bottom, as the rig stage writes a character's. */
@@ -489,11 +688,13 @@ export interface SceneCharacterReport {
   id: string;
   build: string;
   offset: [number, number];
+  /** {@link SceneCharacter.scale}; written only when it is not 1, so a scene that declares none writes the bytes it wrote before the field existed. */
+  scale?: number;
   rig_size: [number, number];
   rig_scale: number;
   /** The union of the character's part boxes, placed: canvas px, [x0, y0, x1, y1], x1 and y1 exclusive. */
   bounds: [number, number, number, number];
-  /** {@link rootShift}: what was added to the x and y of everything the character places in root's frame, in Spine units (canvas px, y up). */
+  /** {@link rootShift}: what was added to the x and y of everything the character places in root's frame (after its scale), in Spine units (canvas px, y up). */
   shift: [number, number];
   /** What the shift was added to: the first-level bones, the slots on `root` whose regions moved, and the count of mesh weights bound to `root`. */
   shifted: { bones: string[]; root_regions: string[]; root_weights: number };
@@ -566,7 +767,7 @@ export function composeScene(
   // ---- one rig_scale, one idle length -------------------------------------
   const scales = ready.map((b) => `"${b.id}" ${b.rigScale}`);
   if (new Set(ready.map((b) => b.rigScale)).size > 1) {
-    fail('SCENE_RIG_SCALE_AGREES', 'scene.characters', `were built at assemble.rig_scale ${scales.join(', ')} (parts.json's scale_rig_per_source); one rig_scale is required — offsets are canvas px and a character's rig px are canvas px at scale 1, and scaling a character in composition is not offered`);
+    fail('SCENE_RIG_SCALE_AGREES', 'scene.characters', `were built at assemble.rig_scale ${scales.join(', ')} (parts.json's scale_rig_per_source); one rig_scale is required — offsets are canvas px and a character's rig px are canvas px at scale 1, and a character's scale (characters[].scale) sizes it on the canvas but does not make two rig_scales one`);
   }
   const durations = ready.map((b) => b.motion.animations.idle.duration);
   if (new Set(durations).size > 1) {
@@ -579,19 +780,22 @@ export function composeScene(
     const b = byId.get(c.id);
     if (b === undefined) return;
     const [x0, y0, x1, y1] = b.artBox;
-    const bounds: [number, number, number, number] = [x0 + c.offset[0], y0 + c.offset[1], x1 + c.offset[0], y1 + c.offset[1]];
+    const s = c.scale;
+    const bounds: [number, number, number, number] = [scaledBy(x0, s) + c.offset[0], scaledBy(y0, s) + c.offset[1], scaledBy(x1, s) + c.offset[0], scaledBy(y1, s) + c.offset[1]];
     if (bounds[0] < 0 || bounds[1] < 0 || bounds[2] > canvas.width || bounds[3] > canvas.height) {
       fail(
         'SCENE_CHARACTER_INSIDE_CANVAS',
         `scene.characters[${i}] "${c.id}"`,
-        `its parts' boxes (rig px [${x0}, ${y0}, ${x1}, ${y1}]) at offset [${c.offset.join(', ')}] cover canvas px [${bounds.join(', ')}], which leaves the ${canvas.width}x${canvas.height} canvas; 0 <= x0, 0 <= y0, x1 <= ${canvas.width} and y1 <= ${canvas.height} are required`,
+        `its parts' boxes (rig px [${x0}, ${y0}, ${x1}, ${y1}]) at offset [${c.offset.join(', ')}]${s === 1 ? '' : ` and scale ${s}`} cover canvas px [${bounds.join(', ')}], which leaves the ${canvas.width}x${canvas.height} canvas; 0 <= x0, 0 <= y0, x1 <= ${canvas.width} and y1 <= ${canvas.height} are required`,
       );
     }
-    const shift = rootShift(b.rig.skeleton, stage, c.offset);
+    problems.push(...scaleProblems(c, b));
+    const shift = rootShift(b.rig.skeleton, stage, c.offset, s);
     rows.push({
       id: c.id,
       build: c.build,
       offset: [...c.offset],
+      ...(s === 1 ? {} : { scale: s }),
       rig_size: [...b.rigSize],
       rig_scale: b.rigScale,
       bounds,
@@ -739,6 +943,12 @@ export function composeScene(
     const r = pyRound(v + d, OFFSET_PLACES);
     return r === 0 ? 0 : r;
   };
+  // A point of root's own frame at a character's scale s (issue #197): s * v + d, rounded once; at s 1 exactly shifted().
+  const placed = (v: number, d: number, s: number): number => {
+    if (s === 1) return shifted(v, d);
+    const r = pyRound(s * v + d, OFFSET_PLACES);
+    return r === 0 ? 0 : r;
+  };
   const bones: RigSpec['bones'] = [{ name: ROOT_BONE, x: 0, y: 0 }];
   const slotDefs = new Map<string, RigSpec['slots'][number]>();
   const skin: Record<string, Record<string, Attachment>> = {};
@@ -754,11 +964,16 @@ export function composeScene(
   scene.characters.forEach((c) => {
     const b = byId.get(c.id) as CharacterBuild;
     const id = c.id;
-    const [dx, dy] = rootShift(b.rig.skeleton, stage, c.offset);
+    const s = c.scale;
+    const [dx, dy] = rootShift(b.rig.skeleton, stage, c.offset, s);
+    // At a scale other than 1 every length the character carries is scaled (issue #197): each bone's x, y and length,
+    // each region's x, y (and its drawn size, by scaleX/scaleY), each weight's bind x, y, the constraints' lengths
+    // (scaledConstraint) and the translate keys (scaledTrack); what sits in root's own frame is then shifted.
     for (const bone of b.rig.bones) {
       if (bone.name === ROOT_BONE) continue;
       const first = bone.parent === ROOT_BONE;
-      bones.push({ ...bone, name: P(id, bone.name), ...(bone.parent === undefined ? {} : { parent: P(id, bone.parent) }), ...(first ? { x: shifted(bone.x, dx), y: shifted(bone.y, dy) } : {}) });
+      const sized = s === 1 ? {} : { x: scaledBy(bone.x, s), y: scaledBy(bone.y, s), ...(bone.length === undefined ? {} : { length: scaledBy(bone.length, s) }) };
+      bones.push({ ...bone, name: P(id, bone.name), ...(bone.parent === undefined ? {} : { parent: P(id, bone.parent) }), ...sized, ...(first ? { x: placed(bone.x, dx, s), y: placed(bone.y, dy, s) } : {}) });
     }
     for (const s of b.rig.slots) slotDefs.set(prefixed(id, s.name), { ...s, name: prefixed(id, s.name), bone: P(id, s.bone), attachment: prefixed(id, s.attachment) });
     // Everything the character places in root's own frame moves with it: a region on a slot root carries, and a
@@ -771,11 +986,24 @@ export function composeScene(
         const a: Attachment = { ...att, image: imageName(id, att.image as string) };
         if (Array.isArray(att.weights)) {
           a.weights = (att.weights as Array<Array<Record<string, unknown>>>).map((v) =>
-            v.map((w) => (w.bone === ROOT_BONE ? { ...w, x: shifted(w.x as number, dx), y: shifted(w.y as number, dy) } : { ...w, bone: P(id, w.bone as string) })),
+            v.map((w) =>
+              w.bone === ROOT_BONE
+                ? { ...w, x: placed(w.x as number, dx, s), y: placed(w.y as number, dy, s) }
+                : { ...w, bone: P(id, w.bone as string), ...(s === 1 ? {} : { x: scaledBy(w.x as number, s), y: scaledBy(w.y as number, s) }) },
+            ),
           );
         } else if (onRoot) {
-          a.x = shifted(att.x as number, dx);
-          a.y = shifted(att.y as number, dy);
+          a.x = placed(att.x as number, dx, s);
+          a.y = placed(att.y as number, dy, s);
+        } else if (s !== 1) {
+          if (typeof att.x === 'number') a.x = scaledBy(att.x, s);
+          if (typeof att.y === 'number') a.y = scaledBy(att.y, s);
+        }
+        // A region's drawn size: rigc reads its width and height off the PNG, so the scale rides on scaleX/scaleY, which
+        // a build never writes (ATTACHMENT_KEYS); a mesh's width and height are its image's, nonessential, and stay.
+        if (s !== 1 && !Array.isArray(att.weights)) {
+          a.scaleX = s;
+          a.scaleY = s;
         }
         out[prefixed(id, name)] = a;
       }
@@ -784,7 +1012,7 @@ export function composeScene(
     for (const [file, bytes] of b.images) images.push([imageName(id, file), bytes]);
     for (const con of b.rig.constraints ?? []) {
       const type = con.type as keyof typeof CONSTRAINT_BONE_FIELDS;
-      const out: Record<string, unknown> = { ...con, name: prefixed(id, String(con.name)) };
+      const out: Record<string, unknown> = { ...scaledConstraint(con as Record<string, unknown>, s), name: prefixed(id, String(con.name)) };
       for (const [field, arity] of CONSTRAINT_BONE_FIELDS[type] ?? []) {
         if (!(field in con)) continue;
         out[field] = arity === 'one' ? P(id, con[field] as string) : (con[field] as string[]).map((n) => P(id, n));
@@ -826,8 +1054,8 @@ export function composeScene(
       tr.keys = (t.keys as unknown as Array<Record<string, unknown>>).map((k) => (typeof k.ease === 'string' ? { ...k, ease: prefixed(id, k.ease) } : k));
       return tr as unknown as MotionSpec['animations']['idle']['tracks'][number];
     };
-    for (const t of b.motion.animations.idle.tracks) tracks.push(prefixTrack(t));
-    for (const [n, a] of Object.entries(animationsOf(b.motion))) if (n !== 'idle') beside[prefixed(id, n)] = { ...a, tracks: a.tracks.map(prefixTrack) };
+    for (const t of b.motion.animations.idle.tracks) tracks.push(scaledTrack(prefixTrack(t), c.scale));
+    for (const [n, a] of Object.entries(animationsOf(b.motion))) if (n !== 'idle') beside[prefixed(id, n)] = { ...a, tracks: a.tracks.map((t) => scaledTrack(prefixTrack(t), c.scale)) };
   }
   const note = notes.size === 1 ? [...notes][0] : ready.map((b) => `${b.id}: ${b.motion.animations.idle.note}`).join(' | ');
   const motion: MotionSpec = { spec: 'rigc-motion/1', archetype: name, cut: name, easings, groups, animations: { idle: { duration: durations[0], loop: true, note, tracks }, ...beside } };
@@ -1059,7 +1287,7 @@ export function composeStage(input: ComposeInput, run: ComposeRunners, log: Log)
   r.scene = input.scene;
   say(`${r.characters.length} character(s) on a ${r.canvas.width}x${r.canvas.height} canvas, rig "${r.rig_name}"${r.plate === null ? ', no plate' : `, plate ${r.plate.image} (provenance ${r.plate.provenance}, judged by nothing)`}`);
   for (const c of r.characters) {
-    say(`  ${c.id}: ${c.build} at offset [${c.offset.join(', ')}], bounds [${c.bounds.join(', ')}], shift [${c.shift.join(', ')}] on ${c.shifted.bones.length} first-level bone(s), ${c.shifted.root_regions.length} region(s) on root and ${c.shifted.root_weights} weight(s) bound to root; ${c.bones} bone(s), ${c.slots} slot(s), ${c.tracks} track(s), ${c.constraints} constraint(s), rig_scale ${c.rig_scale}, idle ${c.idle_duration} s`);
+    say(`  ${c.id}: ${c.build} at offset [${c.offset.join(', ')}], scale ${c.scale ?? 1}, bounds [${c.bounds.join(', ')}], shift [${c.shift.join(', ')}] on ${c.shifted.bones.length} first-level bone(s), ${c.shifted.root_regions.length} region(s) on root and ${c.shifted.root_weights} weight(s) bound to root; ${c.bones} bone(s), ${c.slots} slot(s), ${c.tracks} track(s), ${c.constraints} constraint(s), rig_scale ${c.rig_scale}, idle ${c.idle_duration} s`);
   }
   say(`  order (declared, judged by nothing): ${r.order.declared.join(', ')} -> ${r.order.slots.length} slot(s), back to front`);
   const texts: Array<[string, string]> = [

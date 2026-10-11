@@ -425,9 +425,14 @@ usage:
       Bind several finished characters into one rig. The scene file (spec
       "${SCENE_SPEC}") states the canvas {width, height}, an optional plate
       {image, provenance: ${PROVENANCES.join(' | ')}, note?}, the characters
-      [{id, build, offset: [x, y]}] — each build the --out of a green
+      [{id, build, offset: [x, y], scale?}] — each build the --out of a green
       \`rig-parts build\` (its check/check.json PASS), each offset a
-      translation from its rig px to canvas px — and order: the draw order,
+      translation from its rig px to canvas px, each scale (a positive
+      number, 1 when absent) the character's size about its stage's top-left
+      corner: every length it carries is scaled as Spine's loader scales a
+      skeleton (bones, regions, weight binds, constraint lengths, translate
+      keys), and a physics wind or gravity, which no per-character value
+      can scale, is refused (SCENE_SCALE_EXACT) — and order: the draw order,
       back to front, of character ids (that character's remaining slots, in
       its own order) and "<id>:<slot>" entries, every slot exactly once.
       Paths are relative to the scene file. Every bone, slot, attachment,
@@ -453,7 +458,7 @@ usage:
       rig-c as rig gates its own (build --profile spine-html --pack, the
       compile and the packed pages on disk); --out receives rig/ (rig.json,
       motion.json, images/) and ${SCENE_REPORT_FILE} (spec "${SCENE_REPORT_SPEC}":
-      every setting, each character's offset, bounds and shift (and what it
+      every setting, each character's offset, scale, bounds and shift (and what it
       moved),
       the plate's provenance, the declared and the composed order) only when
       it is green; then check runs over rig/ into check/, as on a rig it did

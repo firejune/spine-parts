@@ -1139,7 +1139,7 @@ proposal in as the steps above say (`RL01`); every step must exit 0.
 | `rig` (inside `build`) | one line per mesh: vertices, triangles, bones, influences, `cover`; the `bones` line; the `idle keys` line; then rigc's gate lines (with A15's declared SKIP under `--idle-keys direct`); in `rig.json`, each chain link's (or its `_ctl`'s) `length` and `rotation` | `cover 1.00000` on every mesh, both gate summaries `0 failed` (the compile and the packed pages); every link's `length` the distance to the next link and `rotation` its direction (Spine degrees, counter-clockwise, y up, local to the parent), every offset under it — a child bone's `x, y`, a weight's bind `x, y`, a region's `x, y` — in that turned frame, and a region on a link carrying `rotation` that turns it back upright. Nothing moved: `flattenRig` (`src/rig.ts`) turns every offset back and gives the unturned numbers | `RIG_LATTICE_ONE_LOOP`: change that mesh's `grid` |
 | `check` (inside `build`) | the gate lines verbatim, the pack line, `loop:` (and `loop physics:` when the rig declares a physics constraint, §7), `seam:`, the six judgement lines, `RECOMPOSITE_HOLES` and, under `--source`, `SETUP_POSE_VS_SOURCE` (§7), `check.json`; the last line says how many of the nine bars measured and names the ones that said SKIP | `check: PASS; 9 of 9 bar(s) measured, 0 skipped` on the examples, and a judgement line SKIP only where the character lacks what it reads; on a rig spec with no `parts.json` or no `idle` (a merged rig, §7 *Measuring a rig rig-parts did not assemble*), PASS with the skipped bars named | `CHECK_SEAM_WITHIN_BAR` or `CHECK_LOOP_CLOSES` (§6) |
 | `check --requirements` (and `build --requirements`) | after the lines above, one line per declared requirement, `NAME: PASS`, `FAIL` or `NOT MEASURABLE — …` with its figures, the bar as declared and the worst frame; then `requirements: N declared — M measured (P PASS, F FAIL), K NOT MEASURABLE; not declared: <kinds>`; `check.json`'s `requirements` block; the renders under `requirements/` (§7, *Declared requirements*) | every line PASS and `0 NOT MEASURABLE`; a follow's `released_copy` says whether rigc's consumer-driven door was taken on the throwaway copy | `CHECK_REQUIREMENT_MET` (a figure past its bar; the line names the frame) or `CHECK_REQUIREMENT_MEASURABLE` (the quantity is undefined in the frames: a tip or an axis on a bone of length 0, an aim with no line, a follow no frame of which reaches its least drive); the last line then reads `check: FAIL — B bar(s) not met, R declared requirement(s) not PASS` |
-| `compose` | the `[compose]` lines: one per character (its offset, its placed bounds, the shift and how many first-level bones, regions on `root` and weights bound to `root` it moved, its bone, slot, track and constraint counts, its `rig_scale` and idle), the declared order and the slot count it expands to, rigc's gate lines; then the `[check]` lines as for `check`, and `scene.json` | both gate summaries `0 failed`, `check: PASS` with the bars that measured and the ones that said SKIP named — on a composed rig `4 of 9`: the gate, the loop, `CHAIN_LAG` and `TEXTURE_STRETCH` (there is no `parts.json`; each character's own `build` measured all nine). `scene.json`'s `order.slots` is the order the compiled skeleton draws | a `SCENE_*` refusal (§6, *compose*) — the scene file, a build, or the order; `COMPOSE_RIGC_GREEN` — rigc's own line, quoted |
+| `compose` | the `[compose]` lines: one per character (its offset, its scale, its placed bounds, the shift and how many first-level bones, regions on `root` and weights bound to `root` it moved, its bone, slot, track and constraint counts, its `rig_scale` and idle), the declared order and the slot count it expands to, rigc's gate lines; then the `[check]` lines as for `check`, and `scene.json` | both gate summaries `0 failed`, `check: PASS` with the bars that measured and the ones that said SKIP named — on a composed rig `4 of 9`: the gate, the loop, `CHAIN_LAG` and `TEXTURE_STRETCH` (there is no `parts.json`; each character's own `build` measured all nine). `scene.json`'s `order.slots` is the order the compiled skeleton draws | a `SCENE_*` refusal (§6, *compose*) — the scene file, a build, or the order; `COMPOSE_RIGC_GREEN` — rigc's own line, quoted |
 | `loop` (inside `build --loop`, or `loop --frames … --out …`) | the dropped-duplicate line, each file's line, then `loop: idle.png N B (lossless); idle-indexed.png N B (max …, mean …); idle.gif N B (max …, mean …)` | `f0048.png equals f0000.png byte for byte, so it is dropped` | `LOOP_ENCODE` (§6) |
 
 `loop` writes three files from one frame set, and they are not interchangeable.
@@ -1648,13 +1648,14 @@ and stay absent).
 
 | rule | means | change |
 | --- | --- | --- |
-| `SCENE_FILE`, `SCENE_SPEC`, `SCENE_FIELD_PRESENT`, `SCENE_FIELD_TYPE`, `SCENE_KEY_KNOWN` | the scene file is missing, not a JSON object, not `spine-parts-scene/1`, or a field is missing, of the wrong type or not one the format reads (`canvas` two positive integers; `characters` at least one, each `id`, `build`, `offset` — an offset is never assumed (0, 0); `order` a list of strings). `note`, `*_note` (strings) and `x-…` (any value) are read by nothing | the field |
+| `SCENE_FILE`, `SCENE_SPEC`, `SCENE_FIELD_PRESENT`, `SCENE_FIELD_TYPE`, `SCENE_KEY_KNOWN` | the scene file is missing, not a JSON object, not `spine-parts-scene/1`, or a field is missing, of the wrong type or not one the format reads (`canvas` two positive integers; `characters` at least one, each `id`, `build`, `offset` — an offset is never assumed (0, 0) — and an optional `scale`, a positive finite number: 0, a negative number or a non-number is refused at `characters[i].scale`; `order` a list of strings). `note`, `*_note` (strings) and `x-…` (any value) are read by nothing | the field |
 | `SCENE_ID_UNIQUE`, `SCENE_ID_FORM` | an `id` repeated, empty, or holding `:` — the separator of a prefixed name — or `/`, `\` or a leading `.`, because an id begins every image file of its character | another id |
 | `SCENE_PLATE_PROVENANCE`, `SCENE_PLATE_PRESENT`, `SCENE_PLATE_SIZE` | the plate's `provenance` is not `observed`, `generated` or `unknown`; its image is missing or not a PNG; it is not the canvas's size (it is drawn at canvas (0, 0) and never scaled) | the plate |
 | `SCENE_BUILD_PRESENT` | a build directory, or a file `build` writes in it (`parts.json`, `rig/rig.json`, `rig/motion.json` with an `idle`, an image its skin names, `check/check.json`), is missing | run `build` for that character |
 | `SCENE_BUILD_GREEN` | the build's own `check/check.json` does not say `PASS` and `gate_spine_html_green` | finish that character first: compose binds finished characters |
 | `SCENE_BUILD_FIELD_KNOWN` | a build's `rig.json` or `motion.json` carries a key compose does not know how to prefix or place, or a root with a transform of its own | a rig `build` wrote; a rig written by something else is `check`'s to measure (§7, *Measuring a rig rig-parts did not assemble*), not compose's to merge |
-| `SCENE_RIG_SCALE_AGREES` | the characters' `parts.json` `scale_rig_per_source` differ (each named) | one `assemble.rig_scale` for every character; scaling a character in composition is not offered |
+| `SCENE_RIG_SCALE_AGREES` | the characters' `parts.json` `scale_rig_per_source` differ (each named) | one `assemble.rig_scale` for every character; `characters[].scale` sizes a placed character, it does not make two `rig_scale`s one |
+| `SCENE_SCALE_EXACT` | a character at a `scale` other than 1 carries something no per-character value can scale: a physics constraint with a nonzero `wind` or `gravity` (Spine applies both through the skeleton's `referenceScale`, which the composed skeleton holds once for every character), a track whose `property` compose does not know to be a length or not, or a translate key whose `v` is neither a list of numbers nor a map of them | `scale` 1 for that character, or rebuild it at another `assemble.rig_scale` |
 | `SCENE_DURATION_AGREES` | the characters' idles are of different durations (each named) | one `motion.duration` |
 | `SCENE_CHARACTER_INSIDE_CANVAS` | a character's part boxes, placed at its offset, leave the canvas (the boxes and the canvas px quoted) | the offset, or the canvas |
 | `SCENE_ORDER_RESOLVES` | an order entry names no character, or `<id>:<slot>` names a slot that character does not have (its slots listed) | the entry |
@@ -2021,6 +2022,7 @@ single-character path (§4, steps 0–9) on its own, already isolated input to a
 | `characters[].id` | the prefix: every bone, slot, attachment (skin entry), constraint (its name, and every bone and path slot it names), `invariants.detached` bone, track, group and easing of that character is renamed `<id>:<name>`. `root` is the one shared root. A name resolves to exactly one character, and nothing resolves across characters without its prefix |
 | `characters[].build` | a `build --out` directory (relative to the scene file) whose own `check/check.json` is green |
 | `characters[].offset` | `[x, y]`, a translation from the build's rig px to canvas px. Every character is built at one `assemble.rig_scale`, so its rig px are canvas px at scale 1 |
+| `characters[].scale` | optional, a positive number; absent is 1, and 1 composes to the bytes a scene without the key writes. The character's size on the canvas, about its stage's top-left corner: a rig px `p` lands at canvas px `scale * p + offset` (issue #197). A character scaled up past its art is drawn soft — the art is not resampled; rebuild it at a higher `assemble.rig_scale` if that matters |
 | `order` | the draw order, back to front: a character id (its slots not named elsewhere, in its own order) or one `<id>:<slot>`. Every slot of every character is drawn exactly once. Interleaving is written by naming slots: `["a", "b:arm_l", "b"]` draws `b`'s left arm between `a` and the rest of `b` |
 
 What is composed:
@@ -2042,6 +2044,23 @@ What is composed:
   character, with what it moved. The root is shared, so a character whose idle keys
   it, or whose constraint names it, is refused (`SCENE_ROOT_SHARED`): it would move
   every character.
+- **The scale** (issue #197) is applied with the offset: every length the character
+  carries is multiplied by it exactly where Spine's own loader multiplies by its
+  `scale` (`SkeletonJson.js`, spine-core 4.3) — each bone's `x`, `y` and `length`;
+  each region's `x`, `y`, and its drawn size through `scaleX`/`scaleY` (rig-c reads
+  `width`/`height` off the PNG); each weight's bind `x`, `y`; an ik's `softness`; a
+  transform's `x`, `y` and, in its `properties`, the `offset` of an `x`/`y` source and
+  the `offset` and `max` of an `x`/`y` target, its `scale` by the target's unit over
+  the source's; a path's `position` under `positionMode` Fixed and its `spacing` under
+  `spacingMode` Length or Fixed; a physics `limit`; a slider driven by a bone's `x` or
+  `y`, its `from` scaled and its `scale` divided; and the translate keys (`translate`,
+  `translatex`, `translatey`), their curves' values with them. An absent field whose
+  Spine default is not 0 (a physics `limit`, 5000; a transform target's `max`, 1; a
+  slider's `scale`, 1) is written as that default scaled. Degrees, mixes, ratios,
+  physics rates and a mesh's `width`/`height` (its image's, nonessential) are not
+  lengths and stay. Then what sits in `root`'s own frame takes the shift, so the
+  character's stage corner lands at `offset`. `scene.json` writes `scale` beside the
+  offset only when it is not 1, and the `[compose]` line always prints it.
 - **The plate** is a region on the bone `plate` under `root`, the first slot, its
   image at canvas (0, 0).
 - **One `idle`** holds every character's tracks; the characters' idles must be of one
@@ -2062,11 +2081,16 @@ What is composed:
   build: without a `parts.json` the seam, `BREATH_VISIBLE`, `BLINK_NO_HOLE`,
   `TIP_OVER_ROOT`, `STILL_REGIONS_DARK` and `RECOMPOSITE_HOLES` say SKIP and why,
   and the gate, the loop, `CHAIN_LAG` and `TEXTURE_STRETCH` measure.
-  `--requirements` is forwarded, and its names are `<id>:<name>`.
+  `--requirements` is forwarded, and its names are `<id>:<name>`. Every bar and
+  requirement measures the composed rig in canvas px, after each character's
+  `scale`: a ratio (`TEXTURE_STRETCH`'s edge against its rest length) or an angle
+  (`CHAIN_LAG`, a `range` in degrees) does not move with it, while a requirement's
+  px figures and its px bar are canvas px — a character composed at 0.5 shows half
+  the px its own `build` measured.
 - **`scene.json`** (`spine-parts-scene-report/1`): the scene file's path as given,
   the canvas, the rig's name (the ids joined by `+`), the pack flags, the plate (its
   image, provenance, note, bone, slot, size, `judged_by: "nothing"`), per character
-  its build, offset, `rig_size`, `rig_scale`, placed bounds (the union of its part
+  its build, offset, `scale` (only when it is not 1), `rig_size`, `rig_scale`, placed bounds (the union of its part
   boxes, canvas px), shift and what it moved (`shifted`: the first-level bones, the
   regions on `root`, the count of weights bound to `root`), and its counts, and the
   order —
@@ -2080,8 +2104,9 @@ every idle frame are byte-identical once `<id>:` and `<id>.` are taken off, and
 and the model's `spine.sha256`, which on each side is the sha256 of its own
 `skeleton.json` and so changes with the names (selftest `SC33`).
 
-**Not offered.** Scaling a character in composition (one `rig_scale` is required);
-any order, overlap or occlusion inferred from an image — the order is the author's,
+**Not offered.** Reconciling two `rig_scale`s (one is required; `scale` sizes a
+character, it does not resample its art); a non-uniform scale, a flip or a rotation
+of a character; any order, overlap or occlusion inferred from an image — the order is the author's,
 and a per-pixel vote that holds for a still pose would not hold once the bodies
 move; person detection, segmentation, isolation or occlusion completion (each
 character's input arrives isolated); a composed `parts.json`, so the bars that
