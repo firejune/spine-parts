@@ -1038,6 +1038,11 @@ export interface SeamFigures {
   mean: number;
   over40: number;
   over80: number;
+  /** The frame pixels {@link over40} counts, by index into the frame, ascending; each one's max-channel |d| is in {@link countedDiff}. */
+  counted: number[];
+  countedDiff: number[];
+  /** The rig-to-frame map the composite was warped by: frame = (sx u + tx, sy v + ty), as float32 values. */
+  map: { sx: number; sy: number; tx: number; ty: number };
 }
 
 /**
@@ -1086,6 +1091,8 @@ export function seamFigures(composite: Raster, frame: Raster, stage: StageBox, v
   let sum = 0;
   let over40 = 0;
   let over80 = 0;
+  const counted: number[] = [];
+  const countedDiff: number[] = [];
   const n = vp.pixelWidth * vp.pixelHeight;
   for (let p = 0; p < n; p++) {
     let m = 0;
@@ -1095,15 +1102,231 @@ export function seamFigures(composite: Raster, frame: Raster, stage: StageBox, v
       if (d > m) m = d;
     }
     sum += m;
-    if (m > SEAM_PX_LEVEL) over40++;
+    if (m > SEAM_PX_LEVEL) {
+      over40++;
+      counted.push(p);
+      countedDiff.push(m);
+    }
     if (m > SEAM_PX_LEVEL_HIGH) over80++;
   }
-  return { mean: sum / n, over40, over80 };
+  return { mean: sum / n, over40, over80, counted, countedDiff, map };
+}
+
+/** Where `check` writes the seam pictures, under `--out` (issue #202): one per row of {@link SeamPairRow}, named by its rank and its two parts. */
+export const SEAM_DIR = 'seam';
+
+/** What a seam row names in place of a part when the counted pixel's sample reads fewer than two parts' art. */
+export const SEAM_NO_ART = '(no art)';
+
+/**
+ * One row of `check.json`'s `seam_pairs` (issue #202): the pixels the seam bar
+ * counts (max-channel |d| over {@link SEAM_PX_LEVEL}) that one pair of parts
+ * answers for, on the setup-pose still — the one frame the bar reads.
+ *
+ * A counted frame pixel is answered for by the parts whose art (alpha above
+ * 0) lies under the composite's own sample of it: the frame pixel's centre
+ * carried back to rig pixels by the inverse of {@link SeamFigures.map}, and
+ * the 2x2 rig pixels the bilinear warp reads there (`floor(u)`, `floor(u) +
+ * 1` by `floor(v)`, `floor(v) + 1`, those inside the rig). Of those parts the
+ * two drawn last (parts.json's order is the draw order) are the pair, lower
+ * first; where only one part's art lies there it is named first and the
+ * second is {@link SEAM_NO_ART}, and where none does both are.
+ * `frame_box` is the counted pixels' bounding box in frame pixels, inclusive,
+ * `[x0, y0, x1, y1]`; `rig_box` the bounding box of the rig pixels those
+ * samples read, in the rig pixels of `parts.json`, `cuts[].polygon` and the
+ * patches.
+ *
+ * `cut` is written only when the two parts come from one layer (the same
+ * parts.json `from`, as a cut's base and piece do, `assemble.cuts`): `from`
+ * is that layer, and `differing_copies_px` how many of the row's counted
+ * pixels have, among the rig pixels their sample reads, one that both parts
+ * hold (alpha above 0 in each — a cut's band) in a different colour (any of
+ * R, G, B unequal). It is what the seam bar sees of a cut's band (issue #202):
+ * the band is not excluded, because the two copies are not one drawing — the
+ * piece shows the painting where it is seen and the base keeps the layer's
+ * colour under it — and the upper part's resampled edge shows the lower
+ * part's copy. The pair's other counted pixels on a cut line are the same
+ * resampling where the art changes colour across the line; this count does
+ * not name them.
+ */
+export interface SeamPairRow {
+  parts: [string, string];
+  px_over_40: number;
+  px_over_80: number;
+  frame_box: [number, number, number, number];
+  rig_box: [number, number, number, number];
+  cut?: { from: string; differing_copies_px: number };
+  picture: string;
+}
+
+/** A part's art in rig pixels: where it is, its image and the layer it comes from (parts.json's `from`). */
+export interface PlacedAlpha {
+  name: string;
+  from: string;
+  x: number;
+  y: number;
+  image: Raster;
+}
+
+/**
+ * Split the seam's counted pixels by the pair of parts that answers for each
+ * ({@link SeamPairRow}), worst first: by `px_over_40` descending, ties by the
+ * pair's names in draw order. `parts` is parts.json's list in its order, each
+ * with its image as assembled.
+ */
+export function seamPairRows(seam: SeamFigures, parts: readonly PlacedAlpha[], rigSize: readonly [number, number], vp: Viewport): Array<{ row: SeamPairRow; pixels: number[] }> {
+  const [W, H] = rigSize;
+  // Each rig pixel's two topmost parts with art there (-1 for none): the top two of a union of pixels are among each pixel's own top two.
+  const top = new Int32Array(W * H).fill(-1);
+  const next = new Int32Array(W * H).fill(-1);
+  parts.forEach((part, k) => {
+    const img = part.image;
+    for (let j = 0; j < img.height; j++) {
+      const v = part.y + j;
+      if (v < 0 || v >= H) continue;
+      for (let i = 0; i < img.width; i++) {
+        const u = part.x + i;
+        if (u < 0 || u >= W || img.data[(j * img.width + i) * 4 + 3] === 0) continue;
+        const q = v * W + u;
+        next[q] = top[q];
+        top[q] = k;
+      }
+    }
+  });
+  const { sx, sy, tx, ty } = seam.map;
+  // A part's pixel at rig (u, v) as an offset into its image, or -1 where it holds no art.
+  const at = (k: number, u: number, v: number): number => {
+    const part = parts[k];
+    const i = u - part.x;
+    const j = v - part.y;
+    if (i < 0 || j < 0 || i >= part.image.width || j >= part.image.height) return -1;
+    const o = (j * part.image.width + i) * 4;
+    return part.image.data[o + 3] === 0 ? -1 : o;
+  };
+  const differ = (a: number, b: number, u: number, v: number): boolean => {
+    const oa = at(a, u, v);
+    const ob = at(b, u, v);
+    if (oa < 0 || ob < 0) return false;
+    const da = parts[a].image.data;
+    const db = parts[b].image.data;
+    return da[oa] !== db[ob] || da[oa + 1] !== db[ob + 1] || da[oa + 2] !== db[ob + 2];
+  };
+  interface Acc { a: number; b: number; over40: number; over80: number; f: [number, number, number, number]; r: [number, number, number, number]; pixels: number[]; differing: number }
+  const byPair = new Map<string, Acc>();
+  seam.counted.forEach((p, idx) => {
+    const fx = p % vp.pixelWidth;
+    const fy = Math.floor(p / vp.pixelWidth);
+    const u0 = Math.floor((fx - tx) / sx);
+    const v0 = Math.floor((fy - ty) / sy);
+    let first = -1;
+    let second = -1;
+    const read: Array<[number, number]> = [];
+    let rx0 = Infinity;
+    let ry0 = Infinity;
+    let rx1 = -Infinity;
+    let ry1 = -Infinity;
+    for (let dv = 0; dv < 2; dv++) {
+      for (let du = 0; du < 2; du++) {
+        const u = u0 + du;
+        const v = v0 + dv;
+        if (u < 0 || u >= W || v < 0 || v >= H) continue;
+        read.push([u, v]);
+        rx0 = Math.min(rx0, u);
+        ry0 = Math.min(ry0, v);
+        rx1 = Math.max(rx1, u);
+        ry1 = Math.max(ry1, v);
+        for (const k of [top[v * W + u], next[v * W + u]]) {
+          if (k < 0 || k === first || k === second) continue;
+          if (k > first) {
+            second = first;
+            first = k;
+          } else if (k > second) second = k;
+        }
+      }
+    }
+    // A sample wholly outside the rig reads no rig pixel; its rig box is the nearest rig pixel.
+    if (rx1 < rx0) {
+      rx0 = rx1 = Math.min(Math.max(u0, 0), W - 1);
+      ry0 = ry1 = Math.min(Math.max(v0, 0), H - 1);
+    }
+    const a = second;
+    const b = first;
+    const key = `${a},${b}`;
+    let acc = byPair.get(key);
+    if (acc === undefined) {
+      acc = { a, b, over40: 0, over80: 0, f: [fx, fy, fx, fy], r: [rx0, ry0, rx1, ry1], pixels: [], differing: 0 };
+      byPair.set(key, acc);
+    }
+    if (a >= 0 && parts[a].from === parts[b].from && read.some(([u, v]) => differ(a, b, u, v))) acc.differing++;
+    acc.over40++;
+    acc.pixels.push(p);
+    if (seam.countedDiff[idx] > SEAM_PX_LEVEL_HIGH) acc.over80++;
+    acc.f = [Math.min(acc.f[0], fx), Math.min(acc.f[1], fy), Math.max(acc.f[2], fx), Math.max(acc.f[3], fy)];
+    acc.r = [Math.min(acc.r[0], rx0), Math.min(acc.r[1], ry0), Math.max(acc.r[2], rx1), Math.max(acc.r[3], ry1)];
+  });
+  const name = (k: number): string => (k < 0 ? SEAM_NO_ART : parts[k].name);
+  const sorted = [...byPair.values()].sort((x, y) => y.over40 - x.over40 || x.b - y.b || x.a - y.a);
+  const width = String(sorted.length).length;
+  return sorted.map((acc, i) => {
+    // A part over no other art is named first, then SEAM_NO_ART.
+    const pair: [string, string] = acc.a < 0 ? [name(acc.b), SEAM_NO_ART] : [name(acc.a), name(acc.b)];
+    const file = `${String(i + 1).padStart(Math.max(2, width), '0')}_${pair.map((n) => (n === SEAM_NO_ART ? 'no-art' : n)).join('_')}.png`;
+    const cut = acc.a >= 0 && parts[acc.a].from === parts[acc.b].from ? { cut: { from: parts[acc.a].from, differing_copies_px: acc.differing } } : {};
+    return { row: { parts: pair, px_over_40: acc.over40, px_over_80: acc.over80, frame_box: acc.f, rig_box: acc.r, ...cut, picture: `${SEAM_DIR}/${file}` }, pixels: acc.pixels };
+  });
+}
+
+/** The marks a seam picture draws: the counted pixels of its pair, and the box round them. */
+export const SEAM_MARK: readonly [number, number, number] = [255, 0, 255];
+export const SEAM_BOX: readonly [number, number, number] = [0, 255, 255];
+
+/**
+ * A seam row's picture: the setup-pose frame with the pair's counted pixels
+ * painted {@link SEAM_MARK} and the rectangle one pixel outside its
+ * `frame_box` drawn {@link SEAM_BOX} where it falls inside the frame. Every
+ * other pixel is the frame's own, opaque. `pixels` are the row's counted
+ * pixels, by index into the frame.
+ */
+export function seamPicture(frame: Raster, row: SeamPairRow, pixels: readonly number[]): Raster {
+  const out = newRaster(frame.width, frame.height);
+  out.data.set(frame.data);
+  for (let p = 0; p < frame.width * frame.height; p++) out.data[p * 4 + 3] = 255;
+  const paint = (x: number, y: number, rgb: readonly [number, number, number]): void => {
+    if (x < 0 || y < 0 || x >= frame.width || y >= frame.height) return;
+    out.data.set(rgb, (y * frame.width + x) * 4);
+  };
+  const [x0, y0, x1, y1] = row.frame_box;
+  for (let x = x0 - 1; x <= x1 + 1; x++) {
+    paint(x, y0 - 1, SEAM_BOX);
+    paint(x, y1 + 1, SEAM_BOX);
+  }
+  for (let y = y0 - 1; y <= y1 + 1; y++) {
+    paint(x0 - 1, y, SEAM_BOX);
+    paint(x1 + 1, y, SEAM_BOX);
+  }
+  for (const p of pixels) paint(p % frame.width, Math.floor(p / frame.width), SEAM_MARK);
+  return out;
 }
 
 /** Python's `round(x, 3)` for the figures written: to three places, on the value's exact decimal expansion. */
 function round3(x: number): number {
   return Number(x.toFixed(3));
+}
+
+/** The seam bar, on the figures as check.json writes them: the mean (rounded to three places) over {@link SEAM_MEAN_BAR}, or more than {@link SEAM_PX_BAR} pixels over {@link SEAM_PX_LEVEL}. */
+function seamFails(mean: number, over40: number): boolean {
+  return mean > SEAM_MEAN_BAR || over40 > SEAM_PX_BAR;
+}
+
+/** A seam row as the console prints it: the pair, the frame, the counts, both boxes and the picture. */
+export function seamPairText(row: SeamPairRow): string {
+  const q = (n: string): string => (n === SEAM_NO_ART ? n : `"${n}"`);
+  const box = (b: readonly number[]): string => `x ${b[0]}..${b[2]}, y ${b[1]}..${b[3]}`;
+  const cut =
+    row.cut === undefined
+      ? ''
+      : `; one layer cut in two (both from ${row.cut.from}): ${row.cut.differing_copies_px} of these px read a pixel both parts hold in different colours. Along a cut line the render draws the upper part's resampled edge over the lower part's own resampled copy, so it parts from the flat stack where the two copies differ and where the art changes colour across the line; a wider cuts[].overlap moves neither, a polygon edge through art of one colour on both sides, in both copies, does`;
+  return `${q(row.parts[0])} / ${q(row.parts[1])} at the setup pose: ${row.px_over_40} px over ${SEAM_PX_LEVEL} (${row.px_over_80} over ${SEAM_PX_LEVEL_HIGH}), frame box ${box(row.frame_box)}, rig box ${box(row.rig_box)}, picture ${row.picture}${cut}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,6 +1485,14 @@ export interface CheckFigures {
   seam_mean: number | null;
   seam_px_over_40: number | null;
   seam_px_over_80: number | null;
+  /**
+   * Written only when the seam bar fails, or when it was asked for (`check
+   * --seam-pairs`), issue #202: the counted pixels split by the pair of parts
+   * that answers for each, worst first ({@link SeamPairRow}), each with its
+   * picture under {@link SEAM_DIR}. A passing run not asked for it writes the
+   * keys it always wrote.
+   */
+  seam_pairs?: SeamPairRow[];
   BREATH_VISIBLE: JudgementLine;
   BLINK_NO_HOLE: JudgementLine;
   CHAIN_LAG: JudgementLine;
@@ -1370,7 +1601,7 @@ export function rigcFailed(what: string, call: RigcCall, lines: readonly string[
  * MEASURABLE is a problem. Without it nothing here reads, writes or prints
  * anything it did not before.
  */
-export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, partsHome?: string, mode: PackMode = DEFAULT_PACK_MODE, source?: string, requirements?: string): CheckReport {
+export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, partsHome?: string, mode: PackMode = DEFAULT_PACK_MODE, source?: string, requirements?: string, seamPairsAsked = false): CheckReport {
   let inp: CheckInputs;
   let reqFile: RequirementsFile | null = null;
   let seams: Map<string, SeamPair[]> | null = null;
@@ -1412,7 +1643,8 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
   const stillDir = join(out, '_still');
   const isoDir = join(out, '_isolated');
   const loopDir = join(out, '_loop');
-  for (const d of [buildDir, idleDir, stillDir, isoDir, loopDir]) rmSync(d, { recursive: true, force: true });
+  const seamDir = join(out, SEAM_DIR);
+  for (const d of [buildDir, idleDir, stillDir, isoDir, loopDir, seamDir]) rmSync(d, { recursive: true, force: true });
   const written: string[] = [];
   const write = (name: string, data: string): void => {
     writeFileSync(join(out, name), data);
@@ -1533,6 +1765,7 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
   // 4. the setup pose as a one-key throwaway animation — the seam reads it against the parts, the source line against
   // the painting — and, beside it, the same pose with the eyes shut
   let seam: SeamFigures | null = null;
+  let seamPairs: SeamPairRow[] | null = null;
   let seamViewport: Viewport | null = null;
   let blink: JudgementLine = skip(lacking);
   let sourceRead: ReportedLine | null = null;
@@ -1566,6 +1799,13 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
       if (inp.parts !== null) {
         const composite = flatComposite(inp.parts, inp.partsDir, stillSet.background);
         seam = seamFigures(composite, stillSet.frames[0].image, inp.stage, stillSet.viewport, stillSet.background);
+        if (seamPairsAsked || seamFails(round3(seam.mean), seam.over40)) {
+          const placed = inp.parts.parts.map((p) => ({ name: p.name, from: p.from, x: p.x, y: p.y, image: readPng(join(inp.partsDir, `${p.name}.png`)) }));
+          const split = seamPairRows(seam, placed, inp.parts.rig_size, stillSet.viewport);
+          mkdirSync(seamDir, { recursive: true });
+          for (const { row, pixels } of split) writePng(join(out, row.picture), seamPicture(stillSet.frames[0].image, row, pixels));
+          seamPairs = split.map((x) => x.row);
+        }
       }
       if (inp.source !== null) {
         // The same pose with every slot tinted black, built with the same animations so rigc fits the same grid.
@@ -1619,6 +1859,7 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
     seam_mean: seam === null ? null : round3(seam.mean),
     seam_px_over_40: seam === null ? null : seam.over40,
     seam_px_over_80: seam === null ? null : seam.over80,
+    ...(seamPairs === null ? {} : { seam_pairs: seamPairs }),
     BREATH_VISIBLE: breath,
     BLINK_NO_HOLE: blink,
     CHAIN_LAG: chain,
@@ -1641,11 +1882,16 @@ export function runCheck(rigDir: string, outDir: string, rigc: RigcRunner, parts
       detail: `max |d| ${loop.max}/255, first at pixel ${loop.x},${loop.y} of ${loopSet.viewport.pixelWidth}x${loopSet.viewport.pixelHeight}; ${LOOP_MAX_BAR} is required — the idle's last key must equal its first`,
     });
   }
-  if (figures.seam_mean !== null && figures.seam_px_over_40 !== null && (figures.seam_mean > SEAM_MEAN_BAR || figures.seam_px_over_40 > SEAM_PX_BAR)) {
+  if (figures.seam_mean !== null && figures.seam_px_over_40 !== null && seamFails(figures.seam_mean, figures.seam_px_over_40)) {
+    const worst = seamPairs === null || seamPairs.length === 0 ? null : seamPairs[0];
     barProblems.push({
       code: 'CHECK_SEAM_WITHIN_BAR',
       object: 'the setup-pose render vs the flat composite of parts/',
-      detail: `mean |d| ${figures.seam_mean}/255 and ${figures.seam_px_over_40} px over ${SEAM_PX_LEVEL} (${figures.seam_px_over_80} over ${SEAM_PX_LEVEL_HIGH}); mean <= ${SEAM_MEAN_BAR.toFixed(1)} and <= ${SEAM_PX_BAR} px over ${SEAM_PX_LEVEL} are required`,
+      detail:
+        `mean |d| ${figures.seam_mean}/255 and ${figures.seam_px_over_40} px over ${SEAM_PX_LEVEL} (${figures.seam_px_over_80} over ${SEAM_PX_LEVEL_HIGH}); mean <= ${SEAM_MEAN_BAR.toFixed(1)} and <= ${SEAM_PX_BAR} px over ${SEAM_PX_LEVEL} are required` +
+        (worst === null
+          ? `; no pixel is over ${SEAM_PX_LEVEL}, so the mean alone fails and there is no pair to name`
+          : `; worst of ${(seamPairs as SeamPairRow[]).length} pair(s): ${seamPairText(worst)} — every pair is a \`seam pair\` line above and a row of check.json's seam_pairs`),
     });
   }
   const rank = (q: Problem): number => JUDGEMENT_LINES.findIndex((n) => q.code === `CHECK_${n}`);

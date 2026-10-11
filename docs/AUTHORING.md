@@ -1353,7 +1353,11 @@ one by 101.5 px [observed, `docs/evidence/scarf-cut.png`]. Where the cut runs th
 opaque art, `overlap` decides the seam: at 0 the pieces abut, each edge is resampled
 against transparency, and on that cut the seam bar read 170 px over 40 against 50
 allowed (`CHECK_SEAM_WITHIN_BAR`); at 1 it read 8, at 2 it read 3, at 4 it read 2
-(the uncut build reads 2) [observed].
+(the uncut build reads 2) [observed]. Those four readings drew the piece behind
+`topwear` (`{"before": "topwear"}`); drawn in front of it (`{"before": "brow_r"}`,
+the plan part after `topwear`), as the setup pose asks, the same cut reads 26 px over
+40 at `overlap` 1, 8 and 16 alike, 24 of them along the cut line, which a wider band
+does not reach (§7, *seam*) [observed, issue #202].
 
 A band covers the edge at rest; when the piece swings clear, the layer has nothing
 where it was. `under` (§3) is the author's image of what lies there, in rig pixels
@@ -1616,7 +1620,7 @@ See-through with another seed.
 | `CHECK_RIGC_GREEN` | a rigc step failed; its line is quoted | as `RIG_RIGC_GREEN` |
 | `CHECK_LOOP_LAST_FRAME_AT_DURATION` | the idle's last frame does not sit at `duration` | `motion.duration` — a whole number of 1/12 s |
 | `CHECK_LOOP_CLOSES` | frame 0 and the frame at `duration` differ (max and first pixel quoted); with a physics constraint, the frames of the rig with every physics constraint left out, and the object says so (§7, *loop*) | a track whose last key is not its first |
-| `CHECK_SEAM_WITHIN_BAR` | the setup pose does not reproduce the flat stack of parts | usually a region or mesh placed off its part; compare with `recomposite_rig.png` |
+| `CHECK_SEAM_WITHIN_BAR` | the setup pose does not reproduce the flat stack of parts | read the `seam pair` lines and `check/seam/` pictures (§7): the pair, its boxes and the pixels counted. Usually a region or mesh placed off its part; compare with `recomposite_rig.png`. A pair of one layer cut in two with `differing_copies_px` is the cut line: move the polygon's edge, not `overlap` |
 | `CHECK_BREATH_VISIBLE` | the torso (`topwear`), rendered alone, barely moves over the idle — or the feet (`footwear`), rendered alone, move at all | the chest's breath tracks (`motion.tracks` on `chest`), or the torso mesh's `segments`; for the feet, the bone their region rides (`regions.<part>`, `root` in both examples) |
 | `CHECK_BLINK_NO_HOLE` | with the blink held shut, the eyewhite box shows the page where the open eye had art | the layer under the eye: the `face` part has no art there. Take the face from the other run, or add a part under the eye; `motion.blink.squash` only hides the hole less |
 | `CHECK_CHAIN_LAG` | a rotate track leads (or does not lag) the keyed bone above it, or a chain link swings less than the link above | that chain track's `phase`/`lag` (a positive `lag`, a child `phase` above its parent's) or its `amps` (non-decreasing toward the tip) |
@@ -1682,7 +1686,39 @@ assemble*, at the end of this section):
   `A49_PACKED_FOOTPRINTS_DO_NOT_OVERLAP` on the packed pass, 16 not in `spine`; `CH09`
   holds it on every fetched example);
 - **seam**: the setup-pose render against the flat composite of `parts/`: mean
-  max-channel |d| ≤ 1.0 of 255, and at most 50 pixels over 40;
+  max-channel |d| ≤ 1.0 of 255, and at most 50 pixels over 40. The bar reads one
+  frame, the setup-pose still, never the idle. When it fails (or when `check
+  --seam-pairs` asks, pass or fail), the pixels over 40 are split by the pair of
+  parts that answers for each (issue #202): the two parts drawn last among those
+  whose art (alpha above 0) lies in the 2x2 rig pixels the composite's bilinear
+  sample reads for that frame pixel, lower first, `(no art)` standing in where
+  fewer than two do. Each pair is a console line `seam pair <i> of <n>: "<a>" /
+  "<b>" at the setup pose: <count> px over 40 (<count> over 80), frame box x
+  <x0>..<x1>, y <y0>..<y1>, rig box …, picture seam/<i>_<a>_<b>.png`, worst first,
+  and a row of `check.json`'s `seam_pairs` (`parts`, `px_over_40`, `px_over_80`,
+  `frame_box` in frame pixels, `rig_box` in the rig pixels of `parts.json` and
+  `cuts[].polygon`, `picture`); `CHECK_SEAM_WITHIN_BAR`'s line quotes the worst.
+  The picture, under `check/seam/`, is the setup-pose frame with that pair's
+  counted pixels painted magenta (255, 0, 255) and a cyan box one pixel outside
+  them. A passing run not asked writes neither the key nor the directory. A pair
+  of one layer cut in two (both parts' `from` the same, `assemble.cuts`) carries
+  `cut`: the layer and `differing_copies_px`, how many of its pixels read a pixel
+  both parts hold in different colours. The band a cut declares is **not**
+  excluded from the count, because the two copies are not one drawing: the piece
+  takes the painting where it is seen and the base keeps the layer's colour under
+  it. Along the cut line the render draws the upper part's resampled edge over
+  the lower part's own resampled copy, where the flat stack is resampled once, so
+  the two part where the copies differ and where the art changes colour across the
+  line; only the band's outermost pixel and the one across the line are read, so
+  the band's width does not enter. On the public `scarf` cut (piece drawn in front
+  of `topwear`) the count read 26 px over 40 at `overlap` 1, 8 and 16 alike, the
+  band 593, 4,886 and 9,508 px (the `cut:` line): 24 of the 26 are `"topwear" /
+  "scarf"` along the cut line, 16 of them reading a band pixel where `topwear`
+  holds the layer's colour and `scarf` the painting's, the other 8 where the cut
+  line runs along the scarf's red edge [observed, issue #202]. A wider band moves
+  neither; the polygon's edge does — run it through art of one colour on both
+  sides, in both copies, which `rig/parts/<from>.png` and `rig/parts/<into>.png`
+  show pixel for pixel;
 - **loop**: idle frame 0 against the frame at `t = duration`: max |d| exactly 0. The bar
   measures the keys (issue #183): a rig that declares a physics constraint — a `rig.json`
   `constraints` entry of `type` `"physics"`, or an entry of `motion.json`'s `physics`
