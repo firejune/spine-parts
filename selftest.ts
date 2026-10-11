@@ -334,7 +334,7 @@ import { LYING_PARTS, LYING_RIG, type PoseName, POSES } from './fixtures/poses.t
 import { buildSheet, tileImage, tilesFrom } from './src/sheet.ts';
 import { block, constraintConfig, HEAT_STRIP_EXPECT, heatStripConfig, islandImages, LASH_CREASE, LASH_RIG, LASH_ROW, lashConfig, lashImages, lashParts, RIG_CANVAS, RIG_EXPECT, rigConfig, rigImages, rigParts, SCENE_TARGET, TURNED_EXPECT, turnedConfig, writeRigFixture } from './fixtures/rig.ts';
 import { blinkHoldProblems, buildRig, DEFAULT_IDLE_KEYS, flattenRig, IDLE_DRIVES_MESHES_WHY, type MeshAttachment, PAD, type RegionAttachment, rigJsonText, type RigOutput, type RigSpec, roundShares, writtenShares } from './src/rig.ts';
-import { type ComposedScene, composeFromFiles, IMAGE_SEP, PLATE, PLATE_IMAGE, PREFIX_SEP, SCENE_REPORT_FILE, SCENE_SPEC, unprefixedNames } from './src/scene.ts';
+import { type ComposedScene, composeFromFiles, IMAGE_SEP, PLATE, PLATE_IMAGE, PREFIX_SEP, SCENE_REPORT_FILE, SCENE_SPEC, scaledConstraint, unprefixedNames } from './src/scene.ts';
 import { sceneCharacterRig, sceneText, writeFlatPlate, writeSceneBuild } from './fixtures/scene.ts';
 import { localInfluences, regionWeight } from './src/localweights.ts';
 import { boneHeat as solveBoneHeat, HEAT_MAX_ITERATIONS, HEAT_SOURCE_BAND, HEAT_TOLERANCE, latticeSilhouette } from './src/heat.ts';
@@ -17222,6 +17222,97 @@ function runSceneSuite(): number {
       solo.length === 0 && nudgedDiff !== null && nudgedDiff.includes('built "   \\"x\\": 1,"'),
       `plain and reach (constraints, invariants, direct idle keys) alone: rig.json and motion.json ${solo.length === 0 ? 'byte-identical to the build\'s once <id>: and <id>. are taken off' : solo.join('; ')}; planted, offset (1, 0): ${nudgedDiff ?? 'IDENTICAL, so the comparison sees nothing'}`,
       'issue #74 §4: a scene of one character at (0, 0) and no plate composes to that character\'s own build outputs renamed only; the public examples hold the same through the gate and the render (the chain suite)',
+    );
+
+    // ---- a character's scale (issue #197) -------------------------------------------
+    // By hand, plain at offset [0, 20] and scale 0.5 on the 100x60 canvas: its stage corner (Spine (-20, 40) on its 40x40
+    // stage) goes to canvas (0, 20) = Spine (-50, 40), so the shift is (-50 - 0.5 * -20, 40 - 0.5 * 40) = (-40, 20).
+    // body (0, 10) under root -> (0.5 * 0 - 40, 0.5 * 10 + 20) = (-40, 25); hem0_ctl (-6, 16), length 8 -> (-3, 8), 4;
+    // eye (-3, 2) -> (-1.5, 1); the eye region (1, 1) -> (0.5, 0.5) drawn at scaleX = scaleY = 0.5; cloth's first vertex
+    // binds hem0 (-8, 8) and hem1 (-16, 8) -> (-4, 4) and (-8, 4), weights as written; the brow key -1 -> -0.5. The eye's
+    // centre, rig px (18, 27), must land at canvas (0 + 0.5 * 18, 20 + 0.5 * 27) = (9, 33.5) = Spine (-41, 26.5), and the
+    // chain body + eye + region gives (-40 - 1.5 + 0.5, 25 + 1 + 0.5) = (-41, 26.5). Bounds: the part boxes' union, rig
+    // px [10, 10, 26, 28], -> [5, 25, 13, 34].
+    const halfBody = two({ characters: [{ id: 'plain', build: 'plain', offset: [0, 20], scale: 0.5 }, { id: 'reach', build: 'reach', offset: [50, 10] }] });
+    const half = compose(halfBody);
+    const H = half.ok as ComposedScene | null;
+    const hb = (n: string): RigSpec['bones'][number] | undefined => H?.rig.bones.find((b) => b.name === n);
+    const hEye = H === null ? undefined : (H.rig.skins.default['plain:eye']?.['plain:eye'] as (RegionAttachment & { scaleX?: number; scaleY?: number }) | undefined);
+    const hBind = H === null ? undefined : (H.rig.skins.default['plain:cloth']?.['plain:cloth'] as MeshAttachment | undefined)?.weights[0];
+    const hBrow = H?.motion.animations.idle.tracks.find((t) => t.group === 'plain:brows')?.keys.map((k) => k.v[0]);
+    const hRotate = H?.motion.animations.idle.tracks.find((t) => t.bone === 'plain:hem0_ctl');
+    const gRotate = (good.ok as ComposedScene | null)?.motion.animations.idle.tracks.find((t) => t.bone === 'plain:hem0_ctl');
+    const reachSame = H !== null && good.ok !== null && rigJsonText(H.rig.bones.filter((b) => b.name.startsWith('reach:'))) === rigJsonText((good.ok as ComposedScene).rig.bones.filter((b) => b.name.startsWith('reach:')));
+    const eyeWorld = [(hb('plain:body')?.x ?? NaN) + (hb('plain:eye')?.x ?? NaN) + (hEye?.x ?? NaN), (hb('plain:body')?.y ?? NaN) + (hb('plain:eye')?.y ?? NaN) + (hEye?.y ?? NaN)];
+    const hRow = H?.report.characters.find((c) => c.id === 'plain');
+    const halfOut = join(dir, 'composed-half');
+    const halfRun = runCli(['compose', '--scene', scene(halfBody), '--out', halfOut]);
+    const halfLine = halfRun.out.split('\n').find((l) => l.startsWith('[compose]   plain: '));
+    say(
+      'SC35_A_CHARACTER_AT_SCALE_0_5_HAS_EVERY_LENGTH_HALVED_ABOUT_ITS_STAGE_CORNER_AND_GATES_GREEN',
+      half.err === null &&
+        hb('plain:body')?.x === -40 && hb('plain:body')?.y === 25 &&
+        hb('plain:hem0_ctl')?.x === -3 && hb('plain:hem0_ctl')?.y === 8 && hb('plain:hem0_ctl')?.length === 4 &&
+        hb('plain:eye')?.x === -1.5 && hb('plain:eye')?.y === 1 &&
+        hEye?.x === 0.5 && hEye.y === 0.5 && hEye.scaleX === 0.5 && hEye.scaleY === 0.5 &&
+        JSON.stringify(hBind) === JSON.stringify([{ bone: 'plain:hem0', x: -4, y: 4, weight: 0.64244 }, { bone: 'plain:hem1', x: -8, y: 4, weight: 0.35756 }]) &&
+        hBrow?.join(',') === '0,0,-0.5,-0.5,0,0' &&
+        hRotate !== undefined && gRotate !== undefined && JSON.stringify(hRotate) === JSON.stringify(gRotate) &&
+        reachSame &&
+        eyeWorld[0] === -41 && eyeWorld[1] === 26.5 &&
+        hRow?.scale === 0.5 && hRow.shift.join(',') === '-40,20' && hRow.bounds.join(',') === '5,25,13,34' &&
+        halfRun.status === 0 && halfLine !== undefined && halfLine.includes('at offset [0, 20], scale 0.5, bounds [5, 25, 13, 34], shift [-40, 20]'),
+      `body (${hb('plain:body')?.x}, ${hb('plain:body')?.y}); hem0_ctl (${hb('plain:hem0_ctl')?.x}, ${hb('plain:hem0_ctl')?.y}) length ${hb('plain:hem0_ctl')?.length}; eye (${hb('plain:eye')?.x}, ${hb('plain:eye')?.y}); region ${JSON.stringify(hEye)}; first bind ${JSON.stringify(hBind)}; brow keys ${hBrow?.join(', ')}; rotate track ${JSON.stringify(hRotate) === JSON.stringify(gRotate) ? 'as at scale 1' : 'changed'}; reach's bones ${reachSame ? 'as in the unscaled scene' : 'moved'}; eye centre at Spine (${eyeWorld.join(', ')}); scene.json scale ${hRow?.scale}, shift [${hRow?.shift.join(', ')}], bounds [${hRow?.bounds.join(', ')}]; through the CLI: exit ${halfRun.status}, ${halfLine?.slice(12, 110) ?? 'no line'}; ${sceneBarLines(halfRun.out, join(halfOut, 'check'))}`,
+      "issue #197: size on the shared stage is placement, like the offset — the composed character is the built one at that size, every length scaled about its stage corner and nothing else (degrees, weights, the other character), rigc's gate green on a region drawn through scaleX/scaleY",
+    );
+    const one = compose(two({ characters: [{ id: 'plain', build: 'plain', offset: [0, 20], scale: 1 }, { id: 'reach', build: 'reach', offset: [50, 10], scale: 1 }] }));
+    const G = good.ok as ComposedScene | null;
+    const O = one.ok as ComposedScene | null;
+    const bytes = (c: ComposedScene | null): string => (c === null ? '' : rigJsonText(c.rig) + rigJsonText(c.motion) + rigJsonText({ ...c.report, scene: '' }));
+    say(
+      'SC36_SCALE_1_DECLARED_COMPOSES_TO_THE_BYTES_OF_A_SCENE_THAT_DECLARES_NONE_AND_0_5_DOES_NOT',
+      G !== null && O !== null && bytes(G) === bytes(O) && !bytes(G).includes('"scale"') && H !== null && bytes(H) !== bytes(G),
+      `both characters at "scale": 1 -> rig.json, motion.json and scene.json (its path aside) ${G !== null && O !== null && bytes(G) === bytes(O) ? 'byte-identical to' : 'differ from'} the scene without the key, which writes no "scale" anywhere: ${G !== null && !bytes(G).includes('"scale"')}; planted, plain at 0.5 -> ${H !== null && bytes(H) !== bytes(G) ? 'differs' : 'the same'} (${H === null ? 'not composed' : firstLineDiff(bytes(G), bytes(H))?.slice(0, 120)})`,
+      'issue #197: scale 1 or absent is byte-identical to today, so every scene written before the field composes as it did; the planted 0.5 shows the comparison would see a change',
+    );
+    const badScales = compose(two({ characters: [{ id: 'plain', build: 'plain', offset: [0, 20], scale: 0 }, { id: 'reach', build: 'reach', offset: [50, 10], scale: -1 }, { id: 'a', build: 'plain', offset: [0, 0], scale: '0.5' }, { id: 'b', build: 'plain', offset: [0, 0], scale: null }], order: ['plain', 'reach', 'a', 'b'] }));
+    const scaleAt = [0, 1, 2, 3].filter((i) => has(badScales.err, 'SCENE_FIELD_TYPE', `scene.characters[${i}].scale`));
+    say(
+      'SC37_A_SCALE_OF_0_A_NEGATIVE_ONE_OR_ONE_NOT_A_NUMBER_IS_REFUSED_BY_NAME',
+      scaleAt.length === 4 && badScales.err?.problems.length === 4 && has(badScales.err, 'SCENE_FIELD_TYPE', 'a positive finite number is required') && half.err === null,
+      `scale 0, -1, "0.5" and null on four characters -> ${badScales.err?.problems.length ?? 0} problem(s) in one refusal, at characters[${scaleAt.join('], [')}]: ${badScales.err === null ? 'none' : problemLine(badScales.err.problems[0]).slice(0, 160)}; scale 0.5 (SC35): ${half.err === null ? 'composes' : codes(half.err)}`,
+      'a size of 0 draws nothing and a negative one flips the character, which #197 leaves out of scope; a string is not a number — each is named at its field, never read as 1',
+    );
+    // By hand at s = 0.5, each as SkeletonJson.js (spine-core 4.3) multiplies by its scale: ik softness 3 -> 1.5;
+    // transform x 4, y -2 -> 2, -1; its properties x -> {rotate, y}: from-offset 2 -> 1, to rotate's scale 3 times
+    // (1 / 0.5) -> 6, to y's offset 4 -> 2, its max (absent, Spine's 1) -> 0.5, its scale x->y unchanged (absent);
+    // path Fixed position 10 -> 5 and spacing (Length, the default) 6 -> 3, Percent position 0.25 stays; physics limit
+    // (absent, Spine's 5000) -> 2500, x and y mixes stay; a slider on bone x: from 8 -> 4, scale (absent, 1) -> 2; one
+    // on rotate: stays.
+    const sc = (con: Record<string, unknown>): string => JSON.stringify(scaledConstraint(con, 0.5));
+    const conWant: Array<[Record<string, unknown>, Record<string, unknown>]> = [
+      [{ type: 'ik', name: 'k', bones: ['a'], target: 't', softness: 3, mix: 0.5 }, { type: 'ik', name: 'k', bones: ['a'], target: 't', softness: 1.5, mix: 0.5 }],
+      [
+        { type: 'transform', name: 't', bones: ['a'], source: 's', x: 4, y: -2, rotation: 30, properties: { x: { offset: 2, to: { rotate: { scale: 3 }, y: { offset: 4 } } } } },
+        { type: 'transform', name: 't', bones: ['a'], source: 's', x: 2, y: -1, rotation: 30, properties: { x: { offset: 1, to: { rotate: { scale: 6 }, y: { offset: 2, max: 0.5 } } } } },
+      ],
+      [{ type: 'path', name: 'p', bones: ['a'], slot: 'q', positionMode: 'fixed', position: 10, spacing: 6 }, { type: 'path', name: 'p', bones: ['a'], slot: 'q', positionMode: 'fixed', position: 5, spacing: 3 }],
+      [{ type: 'path', name: 'p', bones: ['a'], slot: 'q', position: 0.25, spacingMode: 'percent', spacing: 0.1 }, { type: 'path', name: 'p', bones: ['a'], slot: 'q', position: 0.25, spacingMode: 'percent', spacing: 0.1 }],
+      [{ type: 'physics', name: 'f', bone: 'a', x: 0.5, y: 1, strength: 120 }, { type: 'physics', name: 'f', bone: 'a', x: 0.5, y: 1, strength: 120, limit: 2500 }],
+      [{ type: 'slider', name: 's', animation: 'n', bone: 'a', property: 'x', from: 8, to: 1 }, { type: 'slider', name: 's', animation: 'n', bone: 'a', property: 'x', from: 4, to: 1, scale: 2 }],
+      [{ type: 'slider', name: 's', animation: 'n', bone: 'a', property: 'rotate', from: 8 }, { type: 'slider', name: 's', animation: 'n', bone: 'a', property: 'rotate', from: 8 }],
+    ];
+    const conMiss = conWant.filter(([c, w]) => sc(c) !== JSON.stringify(w)).map(([c]) => `${String(c.type)} ${sc(c)}`);
+    const atOne = conWant.every(([c]) => scaledConstraint(c, 1) === c);
+    writeSceneBuild(join(dir, 'windy'), 'reach', { rig: (r) => (r.constraints as Array<Record<string, unknown>>).push({ type: 'physics', name: 'sway', bone: 'hem1', rotate: 1, wind: 2 }) });
+    writeSceneBuild(join(dir, 'oddtrack'), 'plain', { motion: (m) => (m.animations as { idle: { tracks: Array<Record<string, unknown>> } }).idle.tracks.push({ bone: 'body', property: 'translatez', keys: [{ t: 0, v: [0] }, { t: 4, v: [0] }] }) });
+    const windy = compose(two({ characters: [{ id: 'plain', build: 'oddtrack', offset: [0, 20], scale: 0.5 }, { id: 'reach', build: 'windy', offset: [50, 10], scale: 0.5 }] }));
+    const windyAtOne = compose(two({ characters: [{ id: 'plain', build: 'plain', offset: [0, 20] }, { id: 'reach', build: 'windy', offset: [50, 10], scale: 1 }] }));
+    say(
+      'SC38_CONSTRAINT_LENGTHS_ARE_SCALED_WHERE_SPINE_S_LOADER_SCALES_THEM_AND_WHAT_CANNOT_BE_SCALED_IS_REFUSED',
+      conMiss.length === 0 && atOne && has(windy.err, 'SCENE_SCALE_EXACT', 'physics "sway"') && has(windy.err, 'SCENE_SCALE_EXACT', 'tracks[4].property') && windy.err?.problems.length === 2 && windyAtOne.err === null,
+      `${conWant.length} constraints at 0.5: ${conMiss.length === 0 ? 'each as computed by hand' : conMiss.join('; ')}; at 1 each returned as given: ${atOne}; planted, a physics with wind 2 and a translatez track at 0.5 -> ${codes(windy.err)} (${windy.err?.problems.length ?? 0}); the windy build at scale 1 -> ${windyAtOne.err === null ? 'composes' : codes(windyAtOne.err)}`,
+      "issue #197's list — physics and constraint distances, path spacing — is read off Spine's own loader, the one place that says which fields are lengths; Spine scales wind and gravity through the skeleton-wide referenceScale, so a per-character value cannot reproduce them and the refusal says so rather than guessing",
     );
 
     // ---- through the gate --------------------------------------------------------
